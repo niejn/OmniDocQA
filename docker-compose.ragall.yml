@@ -1,0 +1,247 @@
+# 合并文件：RAG 依赖 (Postgres + Qdrant + OpenSearch) + Langfuse v3 服务端
+#
+# 用法（仓库根目录，全新启动，不保留旧数据）：
+#   docker compose -f docker-compose.ragall.yml up -d
+#   （如需彻底清空旧卷：docker compose -f docker-compose.ragall.yml down -v）
+#
+# 包含两部分：
+#   1) RAG 依赖（来自 docker-compose.rag.yml）
+#      - postgres  : 单一共享实例（postgres:17，全新初始化），主机 5433（容器 5432）
+#          · RAG 用库 rag（POSTGRES_DB=rag）
+#          · Langfuse 用默认库 postgres（PG 安装后自带的维护库，始终存在）
+#      - qdrant    : 主机 6433
+#      - opensearch: 主机 9200（SPARSE_BACKEND=opensearch 时使用）
+#   2) Langfuse v3（来自 docker-compose.langfuse.yml，与本项目 langfuse>=3.0.0 客户端匹配）
+#      - langfuse-web : 主机 3001（容器 3000）
+#      - langfuse-worker / clickhouse / redis / minio
+#      （Langfuse 的 postgres 依赖指向同一个共享 postgres 服务，库名 postgres）
+#
+# 端口速查（主机侧）：
+#   RAG:   5433(pg) 6433(qdrant) 9200(opensearch)
+#   Langfuse: 3001(web) 9090(minio) 8123/9000(clickhouse 仅本地) 6379(redis 仅本地)
+#   postgres 主机 5432 不再对外暴露（仅容器网络内 5432 供 Langfuse 使用）
+#
+# 后端 .env 已配好：LANGFUSE_ENABLED=true / PUBLIC_KEY / SECRET_KEY / HOST=http://localhost:3001
+#   Langfuse 首次启动会用固定 key 初始化项目，直接可用，无需去 UI 抄。
+
+services:
+  # ── 共享 Postgres（RAG 的 rag 库 + Langfuse 的 postgres 库） ──────
+  postgres:
+    image: postgres:17
+    container_name: rag-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - rag_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    # Keep the server minor version aligned with the qdrant-client 1.18.x.
+    image: qdrant/qdrant:v1.18.0
+    container_name: rag-qdrant
+    ports:
+      - "${QDRANT_HTTP_PORT:-6433}:6333"
+    volumes:
+      - rag_qdrant_data:/qdrant/storage
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.0
+    container_name: rag-opensearch
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "${OPENSEARCH_HOST_PORT:-9200}:9200"
+    volumes:
+      - rag_opensearch_data:/usr/share/opensearch/data
+
+  # ── Langfuse v3（原 docker-compose.langfuse.yml） ───────────────
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:3030:3030
+    environment:
+      NEXTAUTH_URL: http://localhost:3001
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      SALT: hVmRrzXywJw05nVfuu+BUC755fHBhtOPHaDiGWzbHD0=
+      ENCRYPTION_KEY: 194a725ba23f9360af28ae9fa0e914bc0c4f8d3d224a873697a3f87a50178c1d
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: myredissecret
+      LANGFUSE_BULLMQ_SKIP_REDIS_VERSION_CHECK: "false"
+      REDIS_TLS_ENABLED: "false"
+
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    environment:
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: R7rh2UoQi4r1WP8iNR/8Arkhv+WnF85fJcpIoXGxgC8=
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      SALT: hVmRrzXywJw05nVfuu+BUC755fHBhtOPHaDiGWzbHD0=
+      ENCRYPTION_KEY: 194a725ba23f9360af28ae9fa0e914bc0c4f8d3d224a873697a3f87a50178c1d
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: myredissecret
+      REDIS_TLS_ENABLED: "false"
+      LANGFUSE_INIT_ORG_ID: local-org
+      LANGFUSE_INIT_ORG_NAME: local-org
+      LANGFUSE_INIT_PROJECT_ID: local-project
+      LANGFUSE_INIT_PROJECT_NAME: local-project
+      LANGFUSE_INIT_USER_EMAIL: admin@local.dev
+      LANGFUSE_INIT_USER_PASSWORD: admin123456
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: REDACTED_LANGFUSE_PUBLIC_KEY
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: REDACTED_LANGFUSE_SECRET_KEY
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    restart: always
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      - 127.0.0.1:8123:8123
+      - 127.0.0.1:9000:9000
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    restart: always
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "9090:9000"
+      - 127.0.0.1:9091:9001
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+
+  redis:
+    image: docker.io/redis:7
+    restart: always
+    command: >
+      --requirepass myredissecret
+      --maxmemory-policy noeviction
+    ports:
+      - 127.0.0.1:6379:6379
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  rag_pg_data:
+    driver: local
+  rag_qdrant_data:
+    driver: local
+  rag_opensearch_data:
+    driver: local
+  langfuse_clickhouse_data:
+    driver: local
+  langfuse_clickhouse_logs:
+    driver: local
+  langfuse_minio_data:
+    driver: local
+  langfuse_redis_data:
+    driver: local
