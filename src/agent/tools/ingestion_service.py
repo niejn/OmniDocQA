@@ -496,6 +496,13 @@ async def _ingest_sec_company_facts_json(
         pieces = split_text_for_embedding(line_text, max_chars=get_embedding_safe_chars())
         safe_line_chunks.extend(pieces)
         safe_row_groups.extend([row_group] * len(pieces))
+    if len(safe_line_chunks) != len(line_chunks):
+        logger.info(
+            "[ChunkSplit] companyfacts inputs={} output={} newly_added={}",
+            len(line_chunks),
+            len(safe_line_chunks),
+            len(safe_line_chunks) - len(line_chunks),
+        )
     line_chunks = safe_line_chunks
     row_groups = safe_row_groups
     if not line_chunks and not rows:

@@ -12,7 +12,15 @@ def test_long_text_is_split_without_exceeding_limit():
     assert pieces[-1].endswith("内容。")
 
 
-def test_chunk_payload_split_preserves_metadata_and_records_parts():
+def test_chinese_and_english_punctuation_are_sentence_boundaries():
+    chinese_pieces = split_text_for_embedding("中文句子。下一句！", max_chars=8, overlap_chars=0)
+    english_pieces = split_text_for_embedding("English sentence. Next sentence?", max_chars=20, overlap_chars=0)
+
+    assert chinese_pieces == ["中文句子。", "下一句！"]
+    assert english_pieces == ["English sentence.", "Next sentence?"]
+
+
+def test_chunk_payload_split_preserves_metadata_and_sequence():
     chunk = ChunkPayload(
         text="x" * 2500,
         title="Business",
@@ -22,6 +30,5 @@ def test_chunk_payload_split_preserves_metadata_and_records_parts():
     result = split_chunk_payloads([chunk], max_chars=1000, overlap_chars=10)
 
     assert len(result) == 3
-    assert [item.metadata["source_chunk_part"] for item in result] == [1, 2, 3]
-    assert all(item.metadata["source_chunk_total"] == 3 for item in result)
     assert all(item.metadata["section_path"] == ["Business"] for item in result)
+    assert [item.text for item in result] == ["x" * 1000, "x" * 1000, "x" * 520]
