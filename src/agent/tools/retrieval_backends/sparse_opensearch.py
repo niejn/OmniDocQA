@@ -240,6 +240,8 @@ class OpenSearchSparseBackend:
             if log_stage:
                 log_rag(log_stage, returned=0, reason="no_sparse_indices", limit=limit, levels=levels)
             return []
+        # document_ids 通过 terms filter 先做【候选集裁剪】，随后在候选集内用 BM25（multi_match + ^N boost）打分。
+        # 这是"过滤→粗排"两阶段：filter 不参与打分，只决定谁有资格被 BM25 评分。
         filters: list[dict[str, Any]] = [{"terms": {"document_id": document_ids}}]
         if levels:
             filters.append({"terms": {"level": levels}})

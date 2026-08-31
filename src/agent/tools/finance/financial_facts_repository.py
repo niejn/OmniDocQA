@@ -356,6 +356,12 @@ async def query_observations_by_filters(
 
     This is the preferred path for companyfacts Q&A: use exact-ish filters first,
     then let callers optionally fall back to broader hint/recent queries.
+
+    关键：这是【参数化 SQL】，不是 text-to-SQL。
+    - SQL 模板固定（_OBS_SELECT + 动态 WHERE），问题文本从不入 SQL 字符串。
+    - FinanceQueryPlan 的字段（metric_keys/forms/period_years/accns）经清洗后，
+      作为类型化 bind 参数 $N::type[] 填入模板（见 L366-389）。
+    - 值均做校验：str.strip、年份≥1900、长度裁剪，再由 pool.fetch(sql, *args) 安全执行。
     """
     if not document_ids:
         return []

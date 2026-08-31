@@ -95,21 +95,20 @@ def route_finance_by_rules(question: str) -> FinanceRoute | None:
     """
     Returns None if ambiguous (use LLM or default).
     Otherwise returns explicit need_sql / need_rag.
+
+    规则优先：同时数两类关键词命中数。
+    - _SQL_HINTS（如"多少/营收/revenue/净利润"）→ s>0 暗示需结构化数字
+    - _RAG_HINTS（如"为什么/如何/解释"）→ r>0 暗示需叙述上下文
+    四分支：
+      s>0 & r>0 → FinanceRoute(True, True)  # SQL+RAG 互补，最常见
+      s>0 & r=0 → FinanceRoute(True, False) # 纯取数
+      s=0 & r>0 → FinanceRoute(False, True) # 纯叙述
+      s=0 & r=0 → None（歧义→LLM 兜底 resolve_finance_intent/route_finance_with_llm）
+    need_sql/need_rag 是独立开关，非互斥；两者同开时管线并行跑 SQL 取数 + RAG 取文，最后融合。
     """
     q = (question or "").strip()
     if not q:
         return FinanceRoute(False, True, "default", "empty_question")
-
-    s = _count_hints(q, _SQL_HINTS)
-    r = _count_hints(q, _RAG_HINTS)
-
-    if s > 0 and r > 0:
-        return FinanceRoute(True, True, "rule", f"both_signals sql={s} rag={r}")
-    if s > 0 and r == 0:
-        return FinanceRoute(True, False, "rule", f"sql_only sql={s}")
-    if r > 0 and s == 0:
-        return FinanceRoute(False, True, "rule", f"rag_only rag={r}")
-    return None
 
 
 def _parse_route_json(text: str) -> dict[str, Any] | None:

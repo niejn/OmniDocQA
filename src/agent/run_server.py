@@ -18,7 +18,7 @@ if __name__ == "__main__":
     print(f"📍 主机: {config.host}")
     print(f"📍 端口: {config.port}")
     print(f"📍 API文档: http://{config.host}:{config.port}/docs")
-    print(f"📍 健康检查: http://{config.host}:{config.port}/health")
+    print(f"📍 健康检查: http://{config.host}:{config.port}/agent/health")
     print("=" * 50)
     
     uvicorn.run(

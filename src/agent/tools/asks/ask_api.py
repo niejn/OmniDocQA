@@ -114,6 +114,11 @@ class ConvertChineseResponse(BaseModel):
     original: str
 
 
+    # ── HTTP 入口 ──────────────────────────────────────────────
+    # 接收 AskRequest, 做基础校验后把问题交给 rag_service.answer_question。
+    # 真正的管线编排(意图路由→SQL→混合检索→rerank→生成)都在
+    # rag_service.answer_question / _answer_question_body 里完成。
+    # 流式版本见 generate_answer_stream → stream_answer_events。
 @router.post("/generate", response_model=AskResponse)
 async def generate_answer(request: AskRequest):
     try:

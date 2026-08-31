@@ -6,18 +6,20 @@ import asyncio
 import json
 import os
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from collections import defaultdict
-
+from core.config import config
 from loguru import logger
 
-from core.config import config
 from .chunk_segmenter import ChunkPayload, build_retrieval_chunks
 from .document_parser import parse_document_content
+from .embedding_chunking import split_chunk_payloads, split_text_for_embedding
+from .finance.companyfacts_accession_period import (
+    merge_companyfacts_period_into_metadata,
+)
 from .finance.financial_facts_repository import replace_sec_observations
-from .finance.companyfacts_accession_period import merge_companyfacts_period_into_metadata
 from .finance.sec_company_facts import (
     batch_lines_for_nodes,
     batch_row_groups_for_nodes,
@@ -35,10 +37,9 @@ from .node_repository import (
     start_ingest_run,
     upsert_document,
 )
-from .retrieval_fields import FIELD_METADATA_KEY, build_retrieval_fields
 from .retrieval_backends.factory import get_dense_backend, get_sparse_backend
-from .vectorizer import generate_embeddings_batch
-
+from .retrieval_fields import FIELD_METADATA_KEY, build_retrieval_fields
+from .vectorizer import generate_embeddings_batch, get_embedding_safe_chars
 
 _NODE_METADATA_PASSTHROUGH_KEYS: tuple[str, ...] = (
     # routing / domain
@@ -110,7 +111,7 @@ def _base_node_metadata(document_metadata: dict[str, Any]) -> dict[str, Any]:
 
 # Maximum chars stored in a section node's text field.
 # Prevents index bloat for very large sections while keeping content searchable.
-_SECTION_TEXT_CAP = 6000
+_SECTION_TEXT_CAP = get_embedding_safe_chars()
 
 
 def _merge_chunk_metadata(document_metadata: dict[str, Any], chunk: ChunkPayload) -> dict[str, Any]:
@@ -317,6 +318,7 @@ def _build_section_tree_nodes(
 
 def _build_nodes(document_id: int, ingest_run_id: str, text: str, metadata: dict[str, Any]) -> list[NodeRecord]:
     chunks = build_retrieval_chunks(text)
+    chunks = split_chunk_payloads(chunks, max_chars=get_embedding_safe_chars())
     return _build_section_tree_nodes(chunks, document_id=document_id, ingest_run_id=ingest_run_id, metadata=metadata)
 
 
@@ -437,6 +439,7 @@ async def _ingest_chunks_pipeline(
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
     """Ingest pre-built chunks (e.g. from edgar_htm_parser) without re-splitting."""
+    chunks = split_chunk_payloads(chunks, max_chars=get_embedding_safe_chars())
     nodes = _build_section_tree_nodes(chunks, document_id=document_id, ingest_run_id=ingest_run_id, metadata=metadata)
     vectorized, ingest_err = await _store_nodes(document_id, ingest_run_id, nodes)
     await finish_ingest_run(ingest_run_id, error=ingest_err)
@@ -487,6 +490,14 @@ async def _ingest_sec_company_facts_json(
     lines_per_chunk = 64
     line_chunks = batch_lines_for_nodes(rows, lines_per_chunk=lines_per_chunk)
     row_groups = batch_row_groups_for_nodes(rows, lines_per_chunk=lines_per_chunk)
+    safe_line_chunks: list[str] = []
+    safe_row_groups: list[list[dict[str, Any]]] = []
+    for line_text, row_group in zip(line_chunks, row_groups):
+        pieces = split_text_for_embedding(line_text, max_chars=get_embedding_safe_chars())
+        safe_line_chunks.extend(pieces)
+        safe_row_groups.extend([row_group] * len(pieces))
+    line_chunks = safe_line_chunks
+    row_groups = safe_row_groups
     if not line_chunks and not rows:
         line_chunks = ["(no observations in facts payload)"]
         row_groups = [[]]

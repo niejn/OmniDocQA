@@ -23,7 +23,7 @@ def get_llm(
     max_tokens = 8192
     _cls = RagasSanitizingChatOpenAI if ragas_strip_json_fence else ChatOpenAI
 
-    if "deepseek" in lower:
+    if lower.startswith("deepseek/") or lower == "deepseek":
         return _cls(
             model=name.replace("deepseek/", ""),
             api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -42,6 +42,7 @@ def get_llm(
     if "openai" in lower or "gpt" in lower:
         return _cls(
             model=name.replace("openai/", ""),
+            api_key=config.openai_api_key,
             temperature=temperature,
             max_tokens=max_tokens,
             base_url=config.openai_base_url,

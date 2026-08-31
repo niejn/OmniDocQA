@@ -391,6 +391,14 @@ def _extract_source_section(title: str, metadata: dict[str, Any]) -> str | None:
 
 
 def _build_search_hints(fields: dict[str, Any], metadata: dict[str, Any], title: str) -> str:
+    """合成每篇文档的"检索提示词袋" search_hints（存入 OpenSearch 文本字段）。
+
+    这不是原文，而是把结构化信息拼成一长串文本，专供检索打分：
+      文件名 + 章节名/路径 + 角色 + domain/content_type + 财报类型
+      + 高置信期间 + 金融指标标签(finance_metric_keys) + 申报表(finance_forms)
+      + topic_tags + 标题(title)
+    查询时拿用户问题匹配这个"标签袋"，命中即主题相关 → 加分(见 SparseQueryPlan.should)。
+    """
     parts: list[str] = []
     source_file_name = metadata.get("source_file_name")
     if source_file_name:

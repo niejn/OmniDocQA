@@ -1794,6 +1794,23 @@ async def answer_question(
             raise
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 一次问答请求的管线编排(顺序自上而下):
+#   0. 财务意图路由 + 按需 SQL 取数
+#      → _finance_sql_bundle(question, document_ids)  (本函数内调用)
+#        · resolve_finance_intent(): 关键词规则优先(question_router.route_finance_by_rules),
+#          歧义时 LLM 兜底(finance_intent.resolve_finance_intent) → 得出 need_sql / need_rag;
+#        · 若 need_sql 且文档有 sec_financial_observations 行 → 查财务事实表,
+#          得到 sql_rows / sql_context_text。
+#   1. 混合检索(稠密 + 稀疏 + 重排)  ← 单次 retrieve 调用内部完成
+#      → retrieval_service.retrieve(query, ...)  (本函数内调用)
+#        · 内部顺序(见 llamaindex_retrieval 的 retrieve): query 向量化(OpenRouter)
+#          → 稠密检索(Qdrant) → 稀疏检索(Postgres/OpenSearch 全文) → RRF 融合 → bocha 重排。
+#   2. (可选) SQL 收窄 RAG 候选 → prioritize_nodes_by_sql_evidence(...)  (本函数内, 仅开关开启时)
+#   3. 上下文装配(兄弟节点扩展 / 字符预算截断)
+#   4. LLM 生成答案 → get_llm(model_name=config.default_model)  (本函数末尾, 调火山方舟 deepseek-v4-pro)
+# 注: "稀疏检索"= 关键词/全文检索(Postgres/OpenSearch), 与 SQL 财务事实查询是两条独立路径。
+# ════════════════════════════════════════════════════════════════════════════
 async def _answer_question_body(
     *,
     question: str,
@@ -1824,6 +1841,7 @@ async def _answer_question_body(
         if excluded_ids:
             document_ids = [int(d) for d in document_ids if int(d) not in excluded_ids]
 
+        # 阶段0: 财务意图路由 + 按需 SQL 取数 (_finance_sql_bundle 内部用 resolve_finance_intent 决定 need_sql/need_rag)
         route, sql_context_text, sql_rows, sql_bundle_meta, evidence_plan = await _finance_sql_bundle(
             question, document_ids
         )
@@ -1889,6 +1907,7 @@ async def _answer_question_body(
                     "retrieval_soft_hints": retrieval_soft_hints,
                 },
             ) as retrieval_span:
+                # 阶段1: 混合检索 = 稠密(Qdrant) + 稀疏(Postgres/OpenSearch) + bocha 重排, 全部在 retrieve 内完成
                 retrieval = await retrieval_service.retrieve(
                     query=retrieve_query,
                     document_ids=document_ids,
@@ -2060,6 +2079,7 @@ async def _answer_question_body(
         ):
             from tools.finance.sql_evidence_narrowing import prioritize_nodes_by_sql_evidence
 
+            # 阶段2(可选): 用 SQL 财务事实行收窄/重排 RAG 候选 (FINANCE_SQL_NARROW_RAG_ENABLED 时)
             retrieval["nodes"], narrow_stats = prioritize_nodes_by_sql_evidence(
                 retrieval["nodes"],
                 sql_rows,
@@ -2115,6 +2135,7 @@ async def _answer_question_body(
         sql_context_chars = len(sql_context_text or "")
         rag_context_chars = len(rag_context or "")
         citations = _build_citations(nodes)
+        # 阶段4: LLM 生成答案 (火山方舟 deepseek-v4-pro, 经 llm.get_llm 路由)
         llm = get_llm(model_name=config.default_model, temperature=0.1)
         if resolved_locale == "en":
             system_prompt = (

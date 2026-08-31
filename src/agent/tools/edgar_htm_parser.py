@@ -4,6 +4,9 @@ Two-path parsing strategy:
   - Financial tables : identified by numeric-cell density → Markdown table
   - Narrative text   : extracted from leaf <div> elements → grouped by section
 
+图片/图表（<img>、PNG/JPG/SVG）不被提取、不做 OCR/VLM 识别，需另接管线。
+HTML <TABLE> 财务数据表会被识别并转为 Markdown（见 _table_to_markdown / _classify_table）。
+
 The output JSON can be consumed directly by the chunking / ingestion pipeline.
 
 Usage (standalone):

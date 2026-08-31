@@ -162,6 +162,9 @@ def dense_search(
         if log_stage:
             log_rag(log_stage, returned=0, reason="no_valid_document_ids", limit=limit, levels=levels)
         return []
+    # document_ids 是【元数据预过滤】（payload filter），非向量查询条件。
+    # 它在 Qdrant 侧通过 query_filter=Filter(must=must_conditions) 先缩小候选集，
+    # 再在该子集内做向量相似度搜索。与 sparse_opensearch 侧的 terms filter 对称。
     must_conditions = [
         FieldCondition(key="document_id", match=MatchAny(any=doc_ids)),
     ]

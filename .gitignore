@@ -181,3 +181,12 @@ src/agent/logs/
 src/agent/report/
 src/agent/tools/data/batch_runs/
 src/agent/debug/
+
+# Local agent skill/runtime directories (not project source)
+/.agent/
+/.agents/
+/agent/
+/.claude/
+/.idea/
+/.omo/
+/.ua/

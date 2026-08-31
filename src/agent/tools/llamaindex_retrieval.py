@@ -1410,6 +1410,14 @@ class NodeHybridRetriever(BaseRetriever):
 
         with self.callback_manager.event(CBEventType.QUERY) as query_event:
             query_event.on_start(payload={"query": query, "document_ids": self.document_ids})
+        # ── 本混合检索实现(retrieve)内部检索顺序 ──────────────────────────────
+        #   0. query 向量化: generate_embedding(query)  (OpenRouter, 2048 维)
+        #   1. 稠密检索(dense):  self.dense_backend.search(...)  → Qdrant 向量库
+        #   2. 稀疏检索(sparse): self.sparse_backend.search(...) → Postgres/OpenSearch 全文
+        #   3. 融合(fusion):     reciprocal_rank_fusion([dense, sparse]) → pre_rerank 候选池
+        #   4. 重排(rerank):     reranker.rerank(...)  (bocha_reranker, 语义重排; 叙事类走多查询重排)
+        #   之后: post_rerank_selector → final_ranked → 兄弟节点扩展 → 返回 nodes。
+        #   注意: 稠密=向量、稀疏=关键词全文, 二者在 retrieve 内融合; SQL 财务事实不在此处。
             if query_embedding is None:
                 query_embedding = await generate_embedding(query)
             query_event.on_end(payload={"has_embedding": bool(query_embedding)})
@@ -1429,6 +1437,7 @@ class NodeHybridRetriever(BaseRetriever):
                 else [1, 2]
             )
             summary_dense = (
+                # 步骤1: 稠密检索(dense) → Qdrant 向量库
                 self.dense_backend.search(
                     query_embedding,
                     document_ids=self.document_ids,
@@ -1440,6 +1449,7 @@ class NodeHybridRetriever(BaseRetriever):
                 if query_embedding
                 else []
             )
+                # 步骤2: 稀疏检索(sparse) → Postgres/OpenSearch 全文
             summary_sparse = await self.sparse_backend.search(
                 self.document_ids,
                 query,
@@ -1753,6 +1763,7 @@ class NodeHybridRetriever(BaseRetriever):
                 out_stats=rerank_stats,
             )
         else:
+            # 步骤4: bocha 重排(语义重排, 对 pre_rerank 候选重新打分排序) → final_ranked
             reranked = await reranker.rerank(
                 query=rerank_query,
                 candidates=pre_rerank,

@@ -136,6 +136,7 @@ _NARRATIVE_TARGET_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def _normalize_form_base(value: str) -> str:
+    """归一化申报表类型文本为规范基础 token（10-K/10-Q/8-K）：去空格/点、10K→10-K，并剥离 /A 后缀。"""
     text = str(value or "").strip().upper().replace(" ", "")
     text = text.replace(".", "-")
     text = text.replace("10K", "10-K").replace("10Q", "10-Q").replace("8K", "8-K")
@@ -265,6 +266,7 @@ class EvidencePlan:
 
 
 def _alias_metric_hints(question: str) -> list[str]:
+    """按 _PHRASE_TO_TAGS 把问题里的口语/中文词组映射成 XBRL metric 本地名（如 '营收'→Revenues）。长词组优先匹配，结果去重。"""
     q = (question or "").lower()
     out: list[str] = []
     for phrase, tags in sorted(_PHRASE_TO_TAGS, key=lambda x: -len(x[0])):
@@ -294,6 +296,7 @@ def filter_metric_keys_with_dictionary(keys: list[str] | tuple[str, ...], *, lim
 
 
 def _extract_form_filters(question: str) -> tuple[str, ...] | None:
+    """从问题提取申报表过滤条件：先正则匹配 10-K/10-Q/8-K（含 /A 变体）；无显式表号时，按 annual/quarterly 关键词或 FY2023/Q1 模式回退到 10-K/10-Q。"""
     q = question or ""
     seen: dict[str, None] = {}
     for canonical, rx in _FORM_SPECS:
@@ -302,6 +305,7 @@ def _extract_form_filters(question: str) -> tuple[str, ...] | None:
     if seen:
         return tuple(seen.keys())
     lowered = q.lower()
+    # 无显式表号时的回退：annual 关键词 / FY20xx 模式 → 10-K；quarterly 关键词 / Q1-Q3 / 环比 → 10-Q；二者皆无则不过滤。
     annual = any(token in lowered for token in _ANNUAL_FORM_HINTS) or bool(re.search(r"\bfy\s*20\d{2}\b", lowered))
     quarterly = (
         any(token in lowered for token in _QUARTERLY_FORM_HINTS)
@@ -316,6 +320,7 @@ def _extract_form_filters(question: str) -> tuple[str, ...] | None:
 
 
 def _extract_period_end_dates(question: str) -> tuple[str, ...]:
+    """用正则提取问题中的具体期间结束日（YYYY-MM-DD），去重后最多保留 8 个。"""
     out: list[str] = []
     seen: set[str] = set()
     for match in re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", question or ""):
@@ -326,6 +331,7 @@ def _extract_period_end_dates(question: str) -> tuple[str, ...]:
 
 
 def _extract_period_years(question: str) -> tuple[int, ...]:
+    """用正则提取问题中的年份（20xx），去重后最多保留 6 个。"""
     q = question or ""
     out: list[int] = []
     seen: set[int] = set()
@@ -338,6 +344,7 @@ def _extract_period_years(question: str) -> tuple[int, ...]:
 
 
 def _detect_compare_mode(question: str) -> str:
+    """判断比较模式：yoy(同比)/qoq(环比)/latest(最新)/point_in_time(指定日期)/generic，驱动 SQL 排序与取数策略。"""
     q = (question or "").lower()
     if any(token in q for token in ("year over year", "yoy", "同比", "去年同期")):
         return "yoy"
@@ -351,6 +358,7 @@ def _detect_compare_mode(question: str) -> str:
 
 
 def _prefer_recent(question: str, compare_mode: str) -> bool:
+    """判断是否优先取最近数据：比较模式为 latest/point_in_time 时必为 True；否则看 latest/最近/申报 等关键词。"""
     q = (question or "").lower()
     if compare_mode in {"latest", "point_in_time"}:
         return True
@@ -363,6 +371,7 @@ def _prefer_recent(question: str, compare_mode: str) -> bool:
 
 
 def _build_retrieval_query(question: str, metric_sql_hints: tuple[str, ...]) -> str:
+    """拼装供 dense/sparse/rerank 使用的检索 query：原问题 + 最多 12 个 XBRL metric 提示；无 metric 时仅用原问题。"""
     base = (question or "").strip()
     if not base:
         return ""
@@ -406,6 +415,7 @@ def _build_narrative_retrieval_query(
 
 
 def _detect_narrative_targets(question: str) -> tuple[str, ...]:
+    """按 _NARRATIVE_TARGET_RULES 识别问题涉及的叙述性章节（MD&A/毛利率/流动性/持续经营/风险因素等），返回匹配的目标名。"""
     lowered = (question or "").lower()
     matched: list[str] = []
     for value, aliases in _NARRATIVE_TARGET_RULES:
@@ -415,6 +425,7 @@ def _detect_narrative_targets(question: str) -> tuple[str, ...]:
 
 
 def _term_targets_for_narrative_targets(targets: tuple[str, ...]) -> list[str]:
+    """取与已识别 narrative_targets 对应的前 3 个别名词，作为检索/重排的 term 提示。"""
     out: list[str] = []
     for value, aliases in _NARRATIVE_TARGET_RULES:
         if value not in targets:
@@ -430,6 +441,7 @@ def _derive_question_mode(
     question_kind: str | None,
     narrative_targets: tuple[str, ...],
 ) -> str:
+    """由问题特征推导问答模式：cross_filing_compare / facts_only / narrative_only / mixed_narrative_first / mixed_facts_first，决定 SQL 与 RAG 的先后与主次。"""
     lowered = (question or "").lower()
     if len(plan.period_years) >= 2 or any(
         token in lowered for token in ("compare", "versus", "vs", "变化", "对比", "trend", "evolution")
@@ -452,6 +464,7 @@ def _derive_question_mode(
 
 
 def _derive_evidence_requirements(question_mode: str) -> EvidenceRequirements:
+    """依据 question_mode 产出 EvidenceRequirements：need_narrative / need_numeric_fact / need_cross_filing 三个开关。"""
     if question_mode == "facts_only":
         return EvidenceRequirements(
             need_narrative=False,
@@ -478,6 +491,7 @@ def _derive_evidence_requirements(question_mode: str) -> EvidenceRequirements:
 
 
 def _derive_retrieval_budget(question_mode: str) -> RetrievalBudget:
+    """依据 question_mode 产出检索预算：SQL 行数、summary/leaf 候选数、每 filing 上限、二次检索 accession 上限。"""
     if question_mode == "facts_only":
         return RetrievalBudget(
             sql_row_budget=80,
@@ -517,6 +531,7 @@ def build_finance_evidence_plan(
     sql_plan: FinanceQueryPlan | None = None,
     question_kind: str | None = None,
 ) -> EvidencePlan:
+    """总装函数：把自然语言问题转成结构化 EvidencePlan。\n    先建 FinanceQueryPlan（指标/表/期间），再识别叙述目标、推导问答模式与证据需求、\n    预算与检索 term，最后产出供 RAG+SQL 协同使用的计划。"""
     plan = sql_plan or build_finance_query_plan(question)
     narrative_targets = _detect_narrative_targets(question)
     question_mode = _derive_question_mode(
@@ -527,6 +542,7 @@ def build_finance_evidence_plan(
     )
     requirements = _derive_evidence_requirements(question_mode)
     budget = _derive_retrieval_budget(question_mode)
+    # 汇总检索/重排用的 term：叙述目标别名 + XBRL metric 提示 + 申报表 + 年份 + 期间日，去重后最多 16 个。
     terms: list[str] = []
     terms.extend(_term_targets_for_narrative_targets(narrative_targets))
     terms.extend(plan.metric_sql_hints[:6])
@@ -555,6 +571,7 @@ def build_finance_query_plan(question: str) -> FinanceQueryPlan:
     """Merge metric aliases and parse exact SQL filters from the question."""
     pascal = extract_metric_hints_from_question(question, max_hints=12)
     alias = _alias_metric_hints(question)
+    # 合并两组 metric 提示：外部库抽取(pascal) + 本文件别名表(_alias_metric_hints)，去重后最多 16 个。
     merged = list(dict.fromkeys([*pascal, *alias]))[:16]
     forms = _extract_form_filters(question)
     period_end_dates = _extract_period_end_dates(question)
