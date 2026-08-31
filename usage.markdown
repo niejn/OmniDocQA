@@ -90,6 +90,17 @@ EMBEDDING_PROVIDER=auto
 EMBEDDING_DIMENSION=1536
 ```
 
+For OpenRouter, the character fallback is derived from the model token limit:
+
+```dotenv
+OPENROUTER_EMBEDDING_MAX_INPUT_TOKENS=4096
+OPENROUTER_EMBEDDING_CHARS_PER_TOKEN=0.7
+OPENROUTER_EMBEDDING_SAFE_CHARS=3000
+```
+
+The effective safe character budget is the smaller of
+`max_input_tokens * chars_per_token` and `safe_chars`.
+
 When `QDRANT_API_KEY` is configured while using plain `http://127.0.0.1`, the
 Python client may warn that the API key is being sent over an insecure
 connection. This is separate from the version mismatch. Use HTTPS/TLS for a

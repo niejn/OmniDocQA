@@ -74,7 +74,16 @@ def _max_embedding_input_chars(api_type: Optional[str]) -> int:
     if api_type == "zhipu":
         return _ZHIPU_MAX_INPUT_CHARS
     if api_type == "openrouter":
-        return max(1, int(config.openrouter_embedding_safe_chars))
+        # Convert the model's token budget into a conservative character budget
+        # when no model-specific tokenizer is available.
+        token_budget_chars = int(
+            config.openrouter_embedding_max_input_tokens
+            * config.openrouter_embedding_chars_per_token
+        )
+        return max(
+            1,
+            min(int(config.openrouter_embedding_safe_chars), token_budget_chars),
+        )
     return max(1, int(config.embedding_safe_chars))
 
 

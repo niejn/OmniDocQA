@@ -15,7 +15,7 @@ from loguru import logger
 
 from .chunk_segmenter import ChunkPayload, build_retrieval_chunks
 from .document_parser import parse_document_content
-from .embedding_chunking import split_chunk_payloads, split_text_for_embedding
+from .embedding_chunking import split_chunk_payloads
 from .finance.companyfacts_accession_period import (
     merge_companyfacts_period_into_metadata,
 )
@@ -438,7 +438,7 @@ async def _ingest_chunks_pipeline(
     chunks: list[ChunkPayload],
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    """Ingest pre-built chunks (e.g. from edgar_htm_parser) without re-splitting."""
+    """Ingest pre-built chunks after applying the shared safe splitter."""
     chunks = split_chunk_payloads(chunks, max_chars=get_embedding_safe_chars())
     nodes = _build_section_tree_nodes(chunks, document_id=document_id, ingest_run_id=ingest_run_id, metadata=metadata)
     vectorized, ingest_err = await _store_nodes(document_id, ingest_run_id, nodes)
@@ -490,21 +490,6 @@ async def _ingest_sec_company_facts_json(
     lines_per_chunk = 64
     line_chunks = batch_lines_for_nodes(rows, lines_per_chunk=lines_per_chunk)
     row_groups = batch_row_groups_for_nodes(rows, lines_per_chunk=lines_per_chunk)
-    safe_line_chunks: list[str] = []
-    safe_row_groups: list[list[dict[str, Any]]] = []
-    for line_text, row_group in zip(line_chunks, row_groups):
-        pieces = split_text_for_embedding(line_text, max_chars=get_embedding_safe_chars())
-        safe_line_chunks.extend(pieces)
-        safe_row_groups.extend([row_group] * len(pieces))
-    if len(safe_line_chunks) != len(line_chunks):
-        logger.info(
-            "[ChunkSplit] companyfacts inputs={} output={} newly_added={}",
-            len(line_chunks),
-            len(safe_line_chunks),
-            len(safe_line_chunks) - len(line_chunks),
-        )
-    line_chunks = safe_line_chunks
-    row_groups = safe_row_groups
     if not line_chunks and not rows:
         line_chunks = ["(no observations in facts payload)"]
         row_groups = [[]]
@@ -517,6 +502,25 @@ async def _ingest_sec_company_facts_json(
         "source_file_name": os.path.basename(file_path),
         "pipeline_version": config.rag_pipeline_version,
     }
+    # Normalize companyfacts' line blocks into the same ChunkPayload seam as
+    # ordinary text and EDGAR chunks. Each split part inherits the row-group
+    # metadata so finance filters remain valid after a long block is divided.
+    companyfacts_chunks: list[ChunkPayload] = []
+    for line_text, row_group in zip(line_chunks, row_groups):
+        chunk_meta = dict(base_meta)
+        if row_group:
+            chunk_meta.update(build_chunk_filter_metadata(row_group))
+        companyfacts_chunks.append(
+            ChunkPayload(
+                text=line_text,
+                title=None,
+                metadata=chunk_meta,
+            )
+        )
+    companyfacts_chunks = split_chunk_payloads(
+        companyfacts_chunks,
+        max_chars=get_embedding_safe_chars(),
+    )
     root_id = str(uuid.uuid4())
     nodes: list[NodeRecord] = [
         NodeRecord(
@@ -537,11 +541,9 @@ async def _ingest_sec_company_facts_json(
             ),
         )
     ]
-    for idx, chunk_text in enumerate(line_chunks):
-        title = f"SEC facts {idx + 1}/{len(line_chunks)}"
-        chunk_meta = dict(base_meta)
-        if idx < len(row_groups):
-            chunk_meta.update(build_chunk_filter_metadata(row_groups[idx]))
+    for idx, fact_chunk in enumerate(companyfacts_chunks):
+        title = f"SEC facts {idx + 1}/{len(companyfacts_chunks)}"
+        chunk_meta = dict(fact_chunk.metadata)
         nodes.append(
             NodeRecord(
                 node_id=str(uuid.uuid4()),
@@ -552,12 +554,12 @@ async def _ingest_sec_company_facts_json(
                 level=0,
                 order_index=idx,
                 title=title,
-                text=chunk_text,
+                text=fact_chunk.text,
                 metadata=_attach_retrieval_fields(
                     node_type="chunk",
                     level=0,
                     title=title,
-                    text=chunk_text,
+                    text=fact_chunk.text,
                     metadata=chunk_meta,
                 ),
             )

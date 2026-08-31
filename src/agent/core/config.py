@@ -108,6 +108,7 @@ class Config(BaseSettings):
     openrouter_embedding_target_tokens: int = Field(default=800)  # env: OPENROUTER_EMBEDDING_TARGET_TOKENS
     openrouter_embedding_overlap_tokens: int = Field(default=100)  # env: OPENROUTER_EMBEDDING_OVERLAP_TOKENS
     openrouter_embedding_safe_chars: int = Field(default=3000)  # env: OPENROUTER_EMBEDDING_SAFE_CHARS
+    openrouter_embedding_chars_per_token: float = Field(default=0.7)  # env: OPENROUTER_EMBEDDING_CHARS_PER_TOKEN
 
     rag_pipeline_version: str = Field(default="node-rag-v1")  # env: RAG_PIPELINE_VERSION
     hierarchical_group_size: int = Field(default=6)  # env: HIERARCHICAL_GROUP_SIZE

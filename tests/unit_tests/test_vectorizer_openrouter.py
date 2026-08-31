@@ -75,9 +75,15 @@ def test_auto_prefers_qwen_over_openrouter(monkeypatch):
 
 
 def test_openrouter_limits_capped(monkeypatch):
-    _set(monkeypatch, embedding_batch_size=100, openrouter_embedding_safe_chars=3000)
+    _set(
+        monkeypatch,
+        embedding_batch_size=100,
+        openrouter_embedding_max_input_tokens=4096,
+        openrouter_embedding_safe_chars=3000,
+        openrouter_embedding_chars_per_token=0.7,
+    )
     assert v._embedding_chunk_size("openrouter") == 64
-    assert v._max_embedding_input_chars("openrouter") == 3000
+    assert v._max_embedding_input_chars("openrouter") == 2867
 
 
 def test_provider_specific_safe_chars_do_not_change_generic_fallback(monkeypatch):
@@ -88,6 +94,17 @@ def test_provider_specific_safe_chars_do_not_change_generic_fallback(monkeypatch
     )
     assert v.get_embedding_safe_chars("openrouter") == 2800
     assert v.get_embedding_safe_chars("openai") == 7000
+
+
+def test_openrouter_chars_per_token_controls_safe_budget(monkeypatch):
+    _set(
+        monkeypatch,
+        openrouter_embedding_max_input_tokens=4096,
+        openrouter_embedding_safe_chars=10000,
+        openrouter_embedding_chars_per_token=0.5,
+    )
+
+    assert v.get_embedding_safe_chars("openrouter") == 2048
 
 
 def test_openrouter_kwargs_encoding_float(monkeypatch):

@@ -34,7 +34,7 @@ Type: Grilling
 
 ### Proposed answer
 
-新增 provider/model profile 配置，例如 `OPENROUTER_EMBEDDING_MAX_INPUT_TOKENS`、`OPENROUTER_EMBEDDING_TARGET_TOKENS`、`OPENROUTER_EMBEDDING_OVERLAP_TOKENS` 和 `OPENROUTER_EMBEDDING_SAFE_CHARS`。配置必须明确单位是 token；字符数只能作为没有 tokenizer 时的保守 fallback。目标值应明显低于最大值，例如最大 4096 token 时，目标 chunk 可先设为 700–1200 token。没有专属 profile 的 provider 才使用 `EMBEDDING_SAFE_CHARS` fallback。
+新增 provider/model profile 配置，例如 `OPENROUTER_EMBEDDING_MAX_INPUT_TOKENS`、`OPENROUTER_EMBEDDING_TARGET_TOKENS`、`OPENROUTER_EMBEDDING_OVERLAP_TOKENS`、`OPENROUTER_EMBEDDING_CHARS_PER_TOKEN` 和 `OPENROUTER_EMBEDDING_SAFE_CHARS`。没有 tokenizer 时，安全字符上限按 `max_input_tokens * chars_per_token` 计算，再取 `safe_chars` 的更小值。目标值应明显低于最大值，例如最大 4096 token 时，目标 chunk 可先设为 700–1200 token。没有专属 profile 的 provider 才使用 `EMBEDDING_SAFE_CHARS` fallback。
 
 ## #2: 选择 tokenizer 与 token budget adapter
 
