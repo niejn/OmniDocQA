@@ -1,5 +1,5 @@
-# Langfuse v3 本地部署（与本项目代码匹配：Python 客户端 langfuse>=3.0.0，且代码使用了 v3 专属 API
-# start_as_current_observation / create_score，因此必须配 v3 服务端，不能用 v2）。
+# Langfuse v4 本地部署（与本项目代码匹配：Python 客户端 langfuse>=4.0，代码使用 v4 API
+# start_as_current_observation / create_score）。
 #
 # 端口说明：
 #   - langfuse-web 主机端口改为 3001（容器内部 3000），以对齐本项目 env.example 的
@@ -21,8 +21,7 @@
 #        LANGFUSE_HOST=http://localhost:3001   # 已是默认值，保持不变
 #   5. 重启后端，发一次 ask 请求；Langfuse UI → Traces 用返回的 trace_id 搜索。
 #
-# 镜像：官方 main 分支当前使用 docker.langfuse.com 的 :4 镜像（对应服务端 v3 线）。
-#   若拉不到该 registry，可改用 Docker Hub 的 langfuse/langfuse:3（web/worker 两处同步替换）。
+# 镜像：使用 Langfuse v4 的官方镜像。若拉不到该 registry，请改用对应的 Langfuse v4 镜像（web/worker 两处同步替换）。
 # 密钥已用 openssl 生成（NEXTAUTH_SECRET/SALT/ENCRYPTION_KEY）；其余依赖用本地默认口令。
 
 services:
