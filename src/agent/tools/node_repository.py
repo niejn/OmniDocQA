@@ -546,6 +546,11 @@ async def fetch_leaf_descendants(section_ids: Iterable[str]) -> list[dict[str, A
 
     Uses a recursive CTE to traverse the section tree of arbitrary depth, then
     filters to level=0.  Duplicate node_ids are eliminated by the DISTINCT join.
+
+    This is a database tree-expansion step, not another semantic search. There
+    is currently no SQL LIMIT here, so a large section can produce a large
+    reranker input; callers must bound matched sections or add an expansion
+    policy if latency/cost becomes a problem.
     """
     values = list(dict.fromkeys(str(v) for v in section_ids if str(v).strip()))
     if not values:
@@ -795,6 +800,7 @@ async def complete_evaluation_job(
     *,
     error: Optional[str] = None,
     skipped_reason: Optional[str] = None,
+    scores: Optional[dict[str, float]] = None,
 ) -> None:
     pool = await get_pool()
     if skipped_reason:
@@ -806,13 +812,55 @@ async def complete_evaluation_job(
     else:
         status = "completed"
         err = None
+    # Merge RAGAS scores into metadata so benchmarks can aggregate directly
+    # from this table (Langfuse score_trace stays the observability mirror).
     await pool.execute(
         """
         UPDATE rag_evaluation_jobs
-        SET status = $2, error = $3, finished_at = NOW()
+        SET status = $2,
+            error = $3,
+            finished_at = NOW(),
+            metadata = COALESCE(metadata, '{}'::jsonb) || COALESCE($4::jsonb, '{}'::jsonb)
         WHERE id = $1::uuid
         """,
         job_id,
         status,
         err,
+        json.dumps(
+            {k: float(v) for k, v in scores.items() if v is not None and float(v) == float(v)}
+        )
+        if scores
+        else None,
     )
+
+
+async def resolve_scoped_document_ids(
+    document_ids: list[int],
+    *,
+    periods: Optional[list[str]] = None,
+    forms: Optional[list[str]] = None,
+) -> list[int]:
+    """Narrow candidate documents by structured scope (finance period / form).
+
+    Matches node ``_retrieval_fields`` tags; ``?|`` works for both JSON array
+    values (["2012"]) and scalar strings ("2014") observed in the corpus.
+    A NULL dimension is skipped; returns the intersection as sorted doc ids.
+    Callers must fall back to the original candidates on an empty result.
+    """
+    if not document_ids or not (periods or forms):
+        return []
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT document_id
+        FROM rag_nodes
+        WHERE document_id = ANY($1::bigint[])
+          AND ($2::text[] IS NULL OR metadata->'_retrieval_fields'->'finance_period' ?| $2::text[])
+          AND ($3::text[] IS NULL OR metadata->'_retrieval_fields'->'finance_forms' ?| $3::text[])
+        ORDER BY document_id
+        """,
+        document_ids,
+        periods or None,
+        forms or None,
+    )
+    return [int(r["document_id"]) for r in rows]

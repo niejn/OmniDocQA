@@ -19,9 +19,12 @@ dependencies = [
     "langgraph>=0.2.6",
     "langfuse>=4.0,<5.0",
     "ragas>=0.2.0",
+    "sentence-transformers>=4.1.0",
+    "transformers>=4.51.0",
+    "bitsandbytes>=0.46.0",
+    "accelerate>=1.6.0",
     "loguru>=0.7",
     "asyncpg>=0.29",
-    "qdrant-client>=1.10",
     "openai>=1.0",
     "numpy>=1.26",
     "PyMuPDF>=1.23",
@@ -29,6 +32,9 @@ dependencies = [
     "python-docx>=1.1",
     "chardet>=5.2",
     "opencc-python-reimplemented>=0.1.7",
+    "modelscope>=1.39.1",
+    "torch @ file:///C:/Users/julien/Downloads/torch-2.12.1+cu132-cp313-cp313-win_amd64.whl",
+    "torchvision @ file:///C:/Users/julien/Downloads/torchvision-0.27.1+cu132-cp313-cp313-win_amd64.whl",
 ]
 
 [project.optional-dependencies]

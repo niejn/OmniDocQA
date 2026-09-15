@@ -34,14 +34,10 @@ async def _delete_one(document_id: int, *, skip_pg: bool) -> dict:
     if not skip_pg:
         deleted_pg = await _delete_pg(document_id)
 
-    # Dense backend
-    dense_backend_name = (config.dense_backend or "qdrant").strip().lower()
-    if dense_backend_name == "qdrant":
-        from tools.retrieval_backends.dense_qdrant import QdrantDenseBackend
+    # Dense backend (milvus-only since M5; deletion removes the shared rows)
+    from tools.retrieval_backends.dense_milvus import MilvusDenseBackend
 
-        QdrantDenseBackend().replace_document_nodes(document_id, [])
-    else:
-        raise ValueError(f"Unsupported dense backend: {config.dense_backend!r}")
+    MilvusDenseBackend().replace_document_nodes(document_id, [])
 
     # Sparse backend
     sparse_backend_name = (config.sparse_backend or "postgres").strip().lower()
@@ -53,11 +49,14 @@ async def _delete_one(document_id: int, *, skip_pg: bool) -> dict:
         try:
             from tools.retrieval_backends.sparse_opensearch import OpenSearchSparseBackend
         except Exception as exc:
-            raise RuntimeError(
-                "Sparse backend is opensearch, but opensearch dependency is missing. "
-                "Please install opensearch-py in current Python environment."
-            ) from exc
-        await OpenSearchSparseBackend().replace_document_nodes(document_id, [])
+            print(f"[warn] OpenSearch client unavailable, skipping sparse cleanup: {exc}")
+        else:
+            await OpenSearchSparseBackend().replace_document_nodes(document_id, [])
+    elif sparse_backend_name == "milvus":
+        from tools.retrieval_backends.sparse_milvus import MilvusSparseBackend
+
+        # No-op: dense=milvus delete above already removed the shared rows.
+        await MilvusSparseBackend().replace_document_nodes(document_id, [])
     else:
         raise ValueError(f"Unsupported sparse backend: {config.sparse_backend!r}")
 

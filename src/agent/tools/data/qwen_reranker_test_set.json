@@ -1,0 +1,90 @@
+[
+  {
+    "id": "apple-fy2024-sales",
+    "question": "How does Apple's FY2024 10-K MD&A explain the year-over-year change in total net sales?",
+    "reference_answer": "The FY2024 MD&A discusses the change in total net sales through Products and Services, including product-category performance and the factors that drove the year-over-year movement.",
+    "documents": [
+      {
+        "document_id": "EDGAR_320193_0000320193-24-000081",
+        "label": "positive",
+        "text": "FY2024 Form 10-K, MD&A — Net sales changed year over year as a result of performance across Products and Services. The discussion breaks out iPhone, Mac, iPad, Wearables, Home and Accessories, and Services, and explains the principal drivers of those changes."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-23-000106",
+        "label": "negative",
+        "text": "FY2023 Form 10-K, Risk Factors — Apple faces risks from competition, changing technology, component availability, and the ability to attract and retain qualified personnel."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-24-000081-liquidity",
+        "label": "hard-negative",
+        "text": "FY2024 Form 10-K, MD&A — Apple describes cash, marketable securities, operating cash flows, commercial paper, and term debt as sources used to meet liquidity requirements."
+      }
+    ]
+  },
+  {
+    "id": "apple-fy2023-services",
+    "question": "What does Apple's FY2023 10-K MD&A say about growth in the Services segment?",
+    "reference_answer": "The MD&A describes Services net sales growth and discusses the service categories and factors contributing to the change, including the installed base and Services offerings.",
+    "documents": [
+      {
+        "document_id": "EDGAR_320193_0000320193-23-000106",
+        "label": "positive",
+        "text": "FY2023 Form 10-K, MD&A — Services net sales increased year over year. Management discusses growth across services offerings and relates performance to the installed base of active devices and the expansion of the Services business."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-22-000108",
+        "label": "negative",
+        "text": "FY2022 Form 10-K, MD&A — Mac net sales changed compared with the prior year, reflecting product launches, demand, and the transition to Apple silicon."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-23-000106-risk",
+        "label": "hard-negative",
+        "text": "FY2023 Form 10-K, Risk Factors — Manufacturing and supply-chain disruptions may affect the availability of components and products."
+      }
+    ]
+  },
+  {
+    "id": "apple-fy2021-silicon",
+    "question": "How does Apple's FY2021 10-K describe the transition to Apple Silicon and its strategic importance?",
+    "reference_answer": "The Business and MD&A sections describe Apple's transition to its own Apple Silicon chips as an important product and platform capability, including the introduction of Macs powered by those chips.",
+    "documents": [
+      {
+        "document_id": "EDGAR_320193_0000320193-21-000105",
+        "label": "positive",
+        "text": "FY2021 Form 10-K, Business — Apple began transitioning Mac products to Apple-designed silicon, highlighting control over hardware and software integration and introducing Macs powered by the M1 chip."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-21-000105-risk",
+        "label": "negative",
+        "text": "FY2021 Form 10-K, Risk Factors — Apple depends on third parties for manufacturing and components, and disruptions could delay product shipments."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-20-000096",
+        "label": "hard-negative",
+        "text": "FY2020 Form 10-K, MD&A — The company discusses Products and Services gross margins and changes in operating expenses."
+      }
+    ]
+  },
+  {
+    "id": "apple-fy2024-liquidity",
+    "question": "What does Apple's FY2024 10-K MD&A say about liquidity and capital resources?",
+    "reference_answer": "Management describes cash and marketable securities, cash generated from operations, and access to debt markets as resources supporting liquidity and expected cash requirements.",
+    "documents": [
+      {
+        "document_id": "EDGAR_320193_0000320193-24-000081-liquidity",
+        "label": "positive",
+        "text": "FY2024 Form 10-K, MD&A — Liquidity and capital resources are supported by cash and marketable securities, cash generated from operations, and access to commercial paper and term debt markets. Management discusses expected cash requirements and capital return."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-24-000081-services",
+        "label": "negative",
+        "text": "FY2024 Form 10-K, MD&A — Services performance is discussed through net sales, gross margin, and the installed base of active devices."
+      },
+      {
+        "document_id": "EDGAR_320193_0000320193-24-000081-risk",
+        "label": "hard-negative",
+        "text": "FY2024 Form 10-K, Risk Factors — Competition and rapid technological change may negatively affect products, services, and financial results."
+      }
+    ]
+  }
+]

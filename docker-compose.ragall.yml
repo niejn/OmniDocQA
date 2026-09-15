@@ -9,7 +9,6 @@
 #      - postgres  : 单一共享实例（postgres:17，全新初始化），主机 5433（容器 5432）
 #          · RAG 用库 rag（POSTGRES_DB=rag）
 #          · Langfuse 用默认库 postgres（PG 安装后自带的维护库，始终存在）
-#      - qdrant    : 主机 6433
 #      - opensearch: 主机 9200（SPARSE_BACKEND=opensearch 时使用）
 #   2) Langfuse v3（来自 docker-compose.langfuse.yml，与本项目 langfuse>=3.0.0 客户端匹配）
 #      - langfuse-web : 主机 3001（容器 3000）
@@ -45,15 +44,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  qdrant:
-    # Keep the server minor version aligned with the qdrant-client 1.18.x.
-    image: qdrant/qdrant:v1.18.0
-    container_name: rag-qdrant
-    ports:
-      - "${QDRANT_HTTP_PORT:-6433}:6333"
-    volumes:
-      - rag_qdrant_data:/qdrant/storage
 
   opensearch:
     image: opensearchproject/opensearch:2.17.0
@@ -232,8 +222,6 @@ services:
 
 volumes:
   rag_pg_data:
-    driver: local
-  rag_qdrant_data:
     driver: local
   rag_opensearch_data:
     driver: local

@@ -1592,7 +1592,8 @@ def _build_pipeline_trace(
             "rerank.mode=remote_success 且 remote_http_called=true 表示已调用 Bocha HTTP；"
             "skipped_not_configured 表示未配 URL/Key，仅用融合序截断。",
             "summary_sparse/leaf_sparse=0：OpenSearch 时多为稀疏索引无文档（切换 SPARSE_BACKEND 后需对该文档重新 ingest）；"
-            "Postgres 时多为全文分词、level 过滤或 search_vector 无命中。",
+            "Postgres 时多为全文分词、level 过滤或 search_vector 无命中；"
+            "Milvus(BM25) 时多为分词/analyzer 无命中或文档未以 DENSE_BACKEND=milvus 重新 ingest（text 随 dense 写入）。",
             "Langfuse：数据发往 diagnostics.export_base_url；请在同一部署的 Web UI → Traces 用 trace_id 搜索。"
             "若 OTEL_SDK_DISABLED=true 或 flush 报错，UI 中可能仍无记录。",
             "retrieval_dense_hits / retrieval_sparse_hits：分别是 dense 与 sparse 的原始命中（summary=level 1–2，leaf=level 0）；"
@@ -2236,7 +2237,14 @@ async def _answer_question_body(
                 query=question,
                 answer=answer,
                 context_json=nodes,
-                metadata={"detail_level": detail_level},
+                metadata={
+                    "detail_level": detail_level,
+                    # backend markers let benchmarks group jobs without time windows
+                    "sparse_backend": config.sparse_backend,
+                    "dense_backend": config.dense_backend,
+                    "model": config.default_model,
+                    "pipeline_version": config.rag_pipeline_version,
+                },
             )
 
         pipeline_trace = None

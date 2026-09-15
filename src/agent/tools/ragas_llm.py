@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from langchain_core.outputs import LLMResult
@@ -24,14 +25,17 @@ def strip_markdown_json_fence(text: str) -> str:
         lines = lines[:-1]
     return "\n".join(lines).strip()
 
-
 def _sanitize_llm_result(result: LLMResult) -> None:
     """Strip fences from every generation text (covers stream + non-stream paths)."""
+    import os
+
     for gen_list in result.generations:
         for g in gen_list:
             raw = getattr(g, "text", None) or ""
             if not raw:
                 continue
+            if os.environ.get("RAGAS_DEBUG_RAW"):
+                print(f"[RAGAS-DEBUG] generation text: {repr(raw)[:200]}", file=sys.stderr, flush=True)
             cleaned = strip_markdown_json_fence(raw)
             if cleaned != raw:
                 g.text = cleaned
@@ -39,11 +43,21 @@ def _sanitize_llm_result(result: LLMResult) -> None:
 
 class RagasSanitizingChatOpenAI(ChatOpenAI):
     """ChatOpenAI that strips markdown code fences so RAGAS ``model_validate_json`` works.
-
     LangChain may satisfy requests via ``_agenerate`` or ``_astream`` + merge; overriding
     only ``_agenerate`` misses the streaming path, so we sanitize at ``generate`` /
     ``agenerate`` boundaries.
+
+    Also disables reasoning ("thinking") for the judge LLM: ark plan-endpoint models
+    are reasoning models whose chain-of-thought can exhaust max_tokens, returning an
+    empty ``content`` (finish_reason=length) which breaks every RAGAS pydantic parse.
+    Judge prompts only need direct JSON output.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        extra = {"thinking": {"type": "disabled"}}
+        existing = dict(kwargs.pop("extra_body", None) or {})
+        kwargs["extra_body"] = {**existing, **extra}
+        super().__init__(**kwargs)
 
     def generate(self, *args: Any, **kwargs: Any) -> LLMResult:
         result = super().generate(*args, **kwargs)

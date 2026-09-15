@@ -1,4 +1,4 @@
-# RAG API local dependencies only: PostgreSQL + Qdrant
+# RAG API local dependencies only: PostgreSQL + Milvus (+ OpenSearch optional)
 # Usage (from repo root):
 #   docker compose -f docker-compose.rag.yml up -d
 # Then in src/agent/.env match the host ports below (defaults avoid common clashes on Windows/macOS).
@@ -7,17 +7,20 @@
 # so 127.0.0.1:5432 would hit the wrong server and asyncpg fails with connection reset (WinError 10054).
 # Override: POSTGRES_HOST_PORT=5432 docker compose -f docker-compose.rag.yml up -d
 #
-# Qdrant defaults to host 6433 to avoid clashes with other Qdrant/dev stacks on 6333/6334.
-# Override: QDRANT_HTTP_PORT=6333 docker compose -f docker-compose.rag.yml up -d
-#
 # OpenSearch (sparse / BM25) defaults to host 9200. Set SPARSE_BACKEND=opensearch in src/agent/.env.
 # Override: OPENSEARCH_HOST_PORT=19200 docker compose -f docker-compose.rag.yml up -d
+#
+# Milvus (dense vector store + BM25 sparse; qdrant removed at M5) defaults to host 19530.
+# etcd/minio are Milvus internals and are NOT exposed to the host. The three Milvus containers
+# (etcd + minio + standalone) need ~5.5GB RAM combined; memory limits are set per service.
+# Cutover: DENSE_BACKEND=milvus + MILVUS_URI=http://127.0.0.1:19530 in src/agent/.env.
+# Override: MILVUS_HOST_PORT=19531 docker compose -f docker-compose.rag.yml up -d
 #
 # Example .env (see src/agent/env.example):
 #   DB_HOST=127.0.0.1 DB_PORT=5433 DB_USER=postgres DB_PASSWORD=postgres DB_NAME=rag
 #   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/rag
-#   QDRANT_HOST=127.0.0.1 QDRANT_PORT=6433
 #   OPENSEARCH_HOST=127.0.0.1 OPENSEARCH_PORT=9200 SPARSE_BACKEND=opensearch
+#   MILVUS_URI=http://127.0.0.1:19530 DENSE_BACKEND=milvus
 
 services:
   postgres:
@@ -37,15 +40,6 @@ services:
       timeout: 5s
       retries: 10
 
-  qdrant:
-    # Keep the server minor version aligned with the qdrant-client 1.18.x.
-    image: qdrant/qdrant:v1.18.0
-    container_name: rag-qdrant
-    ports:
-      - "${QDRANT_HTTP_PORT:-6433}:6333"
-    volumes:
-      - rag_qdrant_data:/qdrant/storage
-
   opensearch:
     image: opensearchproject/opensearch:2.17.0
     container_name: rag-opensearch
@@ -63,7 +57,98 @@ services:
     volumes:
       - rag_opensearch_data:/usr/share/opensearch/data
 
+  # ---- Milvus standalone (dense + BM25 sparse vector store) ----
+  # Image versions from the official v2.6.22 standalone compose:
+  # https://github.com/milvus-io/milvus/releases/download/v2.6.22/milvus-standalone-docker-compose.yml
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: rag-milvus-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - rag_milvus_etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: rag-milvus-minio
+    environment:
+      MINIO_ACCESS_KEY: ${MILVUS_MINIO_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MILVUS_MINIO_PASSWORD:-minioadmin}
+    volumes:
+      - rag_milvus_minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  milvus:
+    image: milvusdb/milvus:v2.6.22
+    container_name: rag-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MILVUS_MINIO_USER:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MILVUS_MINIO_PASSWORD:-minioadmin}
+      MQ_TYPE: woodpecker
+    volumes:
+      - rag_milvus_data:/var/lib/milvus
+    ports:
+      - "${MILVUS_HOST_PORT:-19530}:19530"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ---- Attu (Milvus web GUI; Milvus 2.6.x -> Attu v2.6.x) ----
+  # MILVUS_URL uses the compose-internal service name, NOT the host IP.
+  # Host port 8300 (NOT 8000 — that is the FastAPI backend). Override: ATTU_HOST_PORT=...
+  attu:
+    image: zilliz/attu:v2.6.5
+    container_name: rag-attu
+    environment:
+      MILVUS_URL: milvus:19530
+    ports:
+      - "${ATTU_HOST_PORT:-8300}:3000"
+    depends_on:
+      milvus:
+        condition: service_healthy
+
 volumes:
   rag_pg_data:
-  rag_qdrant_data:
   rag_opensearch_data:
+  rag_milvus_etcd_data:
+  rag_milvus_minio_data:
+  rag_milvus_data:

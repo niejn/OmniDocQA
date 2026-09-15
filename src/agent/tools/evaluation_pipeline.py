@@ -13,7 +13,19 @@ from .llm import get_llm
 from .node_repository import complete_evaluation_job, list_pending_evaluation_jobs
 
 try:
+    # Windows + Py3.13: pyarrow's native extension raises an access violation when
+    # first imported lazily inside a running event loop (via ragas -> datasets).
+    # Warm it at module import time, before any asyncio code runs.
+    import pyarrow  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
+
+try:
     from ragas.dataset_schema import SingleTurnSample
+    # NOTE: keep the legacy `ragas.metrics` path — the new `ragas.metrics.collections`
+    # classes require InstructorLLM (llm_factory) and reject our langchain get_llm.
+    # Migrate to collections + llm_factory once in R3 (doc §6.3) together with the
+    # renamed class (LLMContextPrecisionWithoutReference -> ContextPrecisionWithoutReference).
     from ragas.metrics import Faithfulness, LLMContextPrecisionWithoutReference
 except ImportError:  # pragma: no cover
     SingleTurnSample = None
@@ -93,7 +105,7 @@ async def run_pending_evaluations(limit: int | None = None) -> dict[str, Any]:
             scores = await _score_job(job)
             for name, value in scores.items():
                 tracer.score_trace(job["trace_id"], name=name, value=value)
-            await complete_evaluation_job(job["id"])
+            await complete_evaluation_job(job["id"], scores=scores)
             processed += 1
         except Exception as exc:
             logger.exception("[RAGAS] Failed to evaluate job %s", job["id"])

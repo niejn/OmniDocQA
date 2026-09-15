@@ -190,3 +190,7 @@ src/agent/debug/
 /.idea/
 /.omo/
 /.ua/
+
+# M4 benchmark runtime artifacts
+m4_bench/
+m4_progress_*.json

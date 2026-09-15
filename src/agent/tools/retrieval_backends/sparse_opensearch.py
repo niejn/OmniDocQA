@@ -100,6 +100,10 @@ def _field_mapping() -> dict[str, Any]:
 
 
 def _index_body() -> dict[str, Any]:
+    # OpenSearch supplies the lexical BM25 scorer for these text fields. We do
+    # not currently set BM25 k1/b or a custom similarity here, so those values
+    # come from the OpenSearch defaults. The explicit title^N/search_hints^N
+    # values live in the query profile and are field boosts, not BM25 k1/b.
     properties: dict[str, Any] = {
         "node_id": {"type": "keyword"},
         "document_id": {"type": "long"},

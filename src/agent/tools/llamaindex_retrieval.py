@@ -17,11 +17,19 @@ from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 from loguru import logger
 
 from core.config import config
-from .bocha_reranker import reranker
+from .rerank import reranker
 from .llamaindex_callbacks import RecordingCallbackHandler
 from .narrative_multi_rerank import narrative_rerank_subqueries, run_multi_query_rerank
 from .narrative_section_policy import resolve_section_policy, NarrativeSectionPolicy
-from .node_repository import fetch_children, fetch_leaf_descendants, fetch_neighbors, fetch_nodes, fetch_siblings
+from .finance.query_scope_resolver import resolve_query_scope
+from .node_repository import (
+    fetch_children,
+    fetch_leaf_descendants,
+    fetch_neighbors,
+    fetch_nodes,
+    fetch_siblings,
+    resolve_scoped_document_ids,
+)
 from .rag_stage_log import log_rag
 from .retrieval_fields import (
     RETRIEVAL_INDEX_KEYWORD_FIELDS,
@@ -1199,6 +1207,9 @@ def reciprocal_rank_fusion(
     limit: int,
     score_keys: list[str],
 ) -> list[dict[str, Any]]:
+    # Application-level RRF; this is not Milvus RRFRanker. The smoothing
+    # constant is currently fixed at 60, so it is independent of OpenSearch
+    # BM25 k1/b and Qdrant HNSW hnsw_ef.
     scores: dict[str, float] = defaultdict(float)
     merged: dict[str, dict[str, Any]] = {}
     for ranked in ranked_lists:
@@ -1415,7 +1426,7 @@ class NodeHybridRetriever(BaseRetriever):
         #   1. 稠密检索(dense):  self.dense_backend.search(...)  → Qdrant 向量库
         #   2. 稀疏检索(sparse): self.sparse_backend.search(...) → Postgres/OpenSearch 全文
         #   3. 融合(fusion):     reciprocal_rank_fusion([dense, sparse]) → pre_rerank 候选池
-        #   4. 重排(rerank):     reranker.rerank(...)  (bocha_reranker, 语义重排; 叙事类走多查询重排)
+        #   4. 重排(rerank):     reranker.rerank(...)  (rerank.py 组合: 本地 CrossEncoder 默认, Bocha 远程回退)
         #   之后: post_rerank_selector → final_ranked → 兄弟节点扩展 → 返回 nodes。
         #   注意: 稠密=向量、稀疏=关键词全文, 二者在 retrieve 内融合; SQL 财务事实不在此处。
             if query_embedding is None:
@@ -1426,11 +1437,17 @@ class NodeHybridRetriever(BaseRetriever):
             retrieve_event.on_start(payload={"mode": "hierarchical-hybrid"})
             if not query_embedding:
                 log_rag("dense_skipped", reason="no_query_embedding", document_ids=len(self.document_ids))
-            # Section tree: level = path_depth (1=shallowest, higher=more specific).
-            # Search all levels up to section_tree_search_depth so the retriever
-            # finds the most specific matching section regardless of depth.
-            # Non-narrative queries keep the legacy [1, 2] range for compatibility
-            # with documents that haven't been re-ingested yet.
+            # Section tree: level=0 is a leaf evidence chunk; level>=1 is a
+            # navigation/summary node (higher level means a more specific section).
+            # A request has two independent retrieval branches:
+            #   1) summary: search section nodes (level 1/2 for ordinary queries,
+            #      or every level through section_tree_search_depth for narrative);
+            #   2) leaf: search level=0 evidence chunks directly.
+            # Dense and sparse search are fused with RRF inside each branch. The
+            # branches are merged with another RRF before reranking. This costs
+            # more than leaf-only search, but lets a section title act as a
+            # high-recall navigation anchor when child text is weak.
+            # Non-narrative queries keep [1, 2] for older ingested documents.
             summary_levels = (
                 list(range(1, config.section_tree_search_depth + 1))
                 if need_narrative
@@ -1660,6 +1677,11 @@ class NodeHybridRetriever(BaseRetriever):
             if str(item.get("node_id") or "").strip()
         ]
         if need_narrative:
+            # Narrative answers need explanatory prose, not the heading itself.
+            # Expand matched sections to all level=0 descendants and combine them
+            # with the independently retrieved leaf branch. This recursive fetch
+            # has no SQL LIMIT; rerank/final top-k constrain output later, so a
+            # very large section can increase reranker cost and latency.
             section_children = await fetch_leaf_descendants(selected_section_ids)
             section_children = _apply_parent_section_score(
                 rows=section_children,
@@ -1695,6 +1717,9 @@ class NodeHybridRetriever(BaseRetriever):
                 filing_scoped_leaf_count=len(leaf_fused),
             )
         else:
+            # Ordinary queries only expand direct children of matched sections,
+            # capped per parent. These are extra candidates, not another semantic
+            # search: merge them with leaf_fused, apply RRF again, then rerank.
             summary_children = await fetch_children(
                 selected_section_ids,
                 limit_per_parent=max(config.hierarchical_group_size, leaf_limit, 8),
@@ -1746,6 +1771,9 @@ class NodeHybridRetriever(BaseRetriever):
             if need_narrative
             else query
         )
+        # RRF only reconciles rankings from dense/sparse and section/leaf sources;
+        # it is not the final relevance judgment. Narrative mode may run multiple
+        # rerank subqueries (up to narrative_multi_rerank_max_queries).
         rerank_keep = max(config.bocha_top_n, leaf_limit) if need_narrative else config.bocha_top_n
         top_n_cap = min(rerank_keep, max(1, len(pre_rerank)))
         if need_narrative and bool(config.narrative_multi_rerank_enabled):
@@ -2092,9 +2120,30 @@ class LlamaIndexRetrievalService:
         retrieval_soft_hints: Optional[dict[str, list[str]]] = None,
         evidence_plan: Any = None,
     ) -> dict[str, Any]:
+        effective_ids = document_ids
+        # Query-side scope narrowing: explicit year/form mentions in the question
+        # become a document-level hard filter so retrieval competes only inside
+        # the target filings (dense + sparse share the narrowed ids).
+        if config.query_scope_filter_enabled:
+            scope = resolve_query_scope(query)
+            if scope.explicit:
+                scoped = await resolve_scoped_document_ids(
+                    document_ids, periods=scope.periods or None, forms=scope.forms or None
+                )
+                if scoped:
+                    effective_ids = scoped
+                log_rag(
+                    "query_scope",
+                    candidate_docs=len(document_ids),
+                    scoped_docs=len(effective_ids),
+                    periods=scope.periods or None,
+                    forms=scope.forms or None,
+                    sections=scope.sections or None,
+                    narrowed=bool(scoped),
+                )
         callback_handler = RecordingCallbackHandler()
         retriever = NodeHybridRetriever(
-            document_ids=document_ids,
+            document_ids=effective_ids,
             metadata_filters=metadata_filters,
             retrieval_soft_hints=retrieval_soft_hints,
             evidence_plan=evidence_plan,

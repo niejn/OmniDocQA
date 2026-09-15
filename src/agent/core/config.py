@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 """应用配置（Node-centric RAG stack）。"""
 
-import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -41,11 +39,11 @@ class Config(BaseSettings):
         extra="ignore",
     )
 
-    openai_api_key: Optional[str] = Field(default=None)  # env: OPENAI_API_KEY
-    openai_base_url: Optional[str] = Field(default=None)  # env: OPENAI_BASE_URL
-    anthropic_api_key: Optional[str] = Field(default=None)  # env: ANTHROPIC_API_KEY
-    deepseek_api_key: Optional[str] = Field(default=None)  # env: DEEPSEEK_API_KEY
-    qwen_api_key: Optional[str] = Field(default=None)  # env: QWEN_API_KEY
+    openai_api_key: str | None = Field(default=None)  # env: OPENAI_API_KEY
+    openai_base_url: str | None = Field(default=None)  # env: OPENAI_BASE_URL
+    anthropic_api_key: str | None = Field(default=None)  # env: ANTHROPIC_API_KEY
+    deepseek_api_key: str | None = Field(default=None)  # env: DEEPSEEK_API_KEY
+    qwen_api_key: str | None = Field(default=None)  # env: QWEN_API_KEY
 
     default_model: str = Field(default="deepseek/deepseek-chat")  # env: DEFAULT_MODEL
 
@@ -61,33 +59,47 @@ class Config(BaseSettings):
     # ask_result_*.json：写入磁盘前压缩 response.pipeline_trace 等（详情 JSON 仍用完整 payload）
     report_ask_slim: bool = Field(default=True)  # env: REPORT_ASK_SLIM
 
-    database_url: Optional[str] = Field(default=None)  # env: DATABASE_URL
+    database_url: str | None = Field(default=None)  # env: DATABASE_URL
     db_user: str = Field(default="postgres")  # env: DB_USER
     db_password: str = Field(default="postgres")  # env: DB_PASSWORD
     db_name: str = Field(default="rag")  # env: DB_NAME
     db_host: str = Field(default="127.0.0.1")  # env: DB_HOST
     db_port: int = Field(default=5432)  # env: DB_PORT
 
-    qdrant_host: str = Field(default="127.0.0.1")  # env: QDRANT_HOST
-    qdrant_port: int = Field(default=6333)  # env: QDRANT_PORT
-    qdrant_api_key: Optional[str] = Field(default=None)  # env: QDRANT_API_KEY
-    qdrant_collection: str = Field(default="rag_nodes")  # env: QDRANT_COLLECTION
-    dense_backend: str = Field(default="qdrant")  # env: DENSE_BACKEND
+    # Dense vector backend: milvus only (qdrant removed at M5, 2026-09-15).
+    dense_backend: str = Field(default="milvus")  # env: DENSE_BACKEND
     sparse_backend: str = Field(default="postgres")  # env: SPARSE_BACKEND
+
+    milvus_uri: str = Field(default="http://127.0.0.1:19530")  # env: MILVUS_URI
+    milvus_user: str | None = Field(default=None)  # env: MILVUS_USER
+    milvus_password: str | None = Field(default=None)  # env: MILVUS_PASSWORD
+    milvus_database: str = Field(default="default")  # env: MILVUS_DATABASE
+    milvus_collection: str = Field(default="rag_nodes")  # env: MILVUS_COLLECTION
+    # BM25 text analyzer for the Milvus sparse path (Step 1B): english | jieba | standard
+    milvus_text_analyzer: str = Field(default="english")  # env: MILVUS_TEXT_ANALYZER
+    # BM25 text enrichment: approximate OpenSearch field boosts (title^2.5 / search_hints^4)
+    # inside the single BM25 `text` column by repeating title/hints (TF proxy; BM25's k1
+    # saturation makes this sub-linear). 0 disables enrichment (pure body text).
+    # Changing values requires scripts/milvus_rebuild_text.py to rewrite existing rows.
+    milvus_text_title_repeats: int = Field(default=2)  # env: MILVUS_TEXT_TITLE_REPEATS
+    milvus_text_hints_repeats: int = Field(default=3)  # env: MILVUS_TEXT_HINTS_REPEATS
+    # Query-side scope narrowing: explicit year/form mentions in a question become a
+    # document-level hard filter before dense/sparse retrieval (2026-09-14 M4 fix).
+    query_scope_filter_enabled: bool = Field(default=True)  # env: QUERY_SCOPE_FILTER_ENABLED
 
     opensearch_host: str = Field(default="127.0.0.1")  # env: OPENSEARCH_HOST
     opensearch_port: int = Field(default=9200)  # env: OPENSEARCH_PORT
-    opensearch_user: Optional[str] = Field(default=None)  # env: OPENSEARCH_USER
-    opensearch_password: Optional[str] = Field(default=None)  # env: OPENSEARCH_PASSWORD
+    opensearch_user: str | None = Field(default=None)  # env: OPENSEARCH_USER
+    opensearch_password: str | None = Field(default=None)  # env: OPENSEARCH_PASSWORD
     opensearch_use_ssl: bool = Field(default=False)  # env: OPENSEARCH_USE_SSL
     opensearch_verify_certs: bool = Field(default=True)  # env: OPENSEARCH_VERIFY_CERTS
     opensearch_timeout_seconds: float = Field(default=15.0)  # env: OPENSEARCH_TIMEOUT_SECONDS
     opensearch_sparse_index: str = Field(default="rag_nodes_sparse")  # env: OPENSEARCH_SPARSE_INDEX
-    opensearch_sparse_index_finance: Optional[str] = Field(default=None)  # env: OPENSEARCH_SPARSE_INDEX_FINANCE
+    opensearch_sparse_index_finance: str | None = Field(default=None)  # env: OPENSEARCH_SPARSE_INDEX_FINANCE
     # sparse：finance=仅财务索引；all=财务索引 + OPENSEARCH_SPARSE_INDEX（默认兜底，便于扩展第二域时再拆分）
     opensearch_sparse_search_scope: str = Field(default="finance")  # env: OPENSEARCH_SPARSE_SEARCH_SCOPE
-    opensearch_sparse_analyzer: Optional[str] = Field(default=None)  # env: OPENSEARCH_SPARSE_ANALYZER
-    opensearch_sparse_search_analyzer: Optional[str] = Field(default=None)  # env: OPENSEARCH_SPARSE_SEARCH_ANALYZER
+    opensearch_sparse_analyzer: str | None = Field(default=None)  # env: OPENSEARCH_SPARSE_ANALYZER
+    opensearch_sparse_search_analyzer: str | None = Field(default=None)  # env: OPENSEARCH_SPARSE_SEARCH_ANALYZER
 
     embedding_model: str = Field(default="text-embedding-v3")  # env: EMBEDDING_MODEL
     embedding_dimension: int = Field(default=1536)  # env: EMBEDDING_DIMENSION
@@ -99,10 +111,10 @@ class Config(BaseSettings):
     embedding_provider: str = Field(default="auto")  # env: EMBEDDING_PROVIDER
     openai_embedding_model: str = Field(default="text-embedding-3-small")  # env: OPENAI_EMBEDDING_MODEL
     # Zhipu (BigModel) embeddings via OpenAI-compatible endpoint
-    zhipu_api_key: Optional[str] = Field(default=None)  # env: ZHIPU_API_KEY
+    zhipu_api_key: str | None = Field(default=None)  # env: ZHIPU_API_KEY
     zhipu_embedding_model: str = Field(default="embedding-3")  # env: ZHIPU_EMBEDDING_MODEL
     # OpenRouter embeddings via OpenAI-compatible endpoint (nvidia/nemotron-3-embed-1b:free)
-    openrouter_api_key: Optional[str] = Field(default=None)  # env: OPENROUTER_API_KEY
+    openrouter_api_key: str | None = Field(default=None)  # env: OPENROUTER_API_KEY
     openrouter_embedding_model: str = Field(default="nvidia/nemotron-3-embed-1b:free")  # env: OPENROUTER_EMBEDDING_MODEL
     openrouter_embedding_max_input_tokens: int = Field(default=4096)  # env: OPENROUTER_EMBEDDING_MAX_INPUT_TOKENS
     openrouter_embedding_target_tokens: int = Field(default=800)  # env: OPENROUTER_EMBEDDING_TARGET_TOKENS
@@ -146,16 +158,24 @@ class Config(BaseSettings):
     # Set to 0 to disable budget mode and fall back to fixed top_k.
     context_char_budget: int = Field(default=6000)  # env: CONTEXT_CHAR_BUDGET
 
-    bocha_reranker_url: Optional[str] = Field(default=None)  # env: BOCHA_RERANKER_URL
-    bocha_api_key: Optional[str] = Field(default=None)  # env: BOCHA_API_KEY
+    bocha_reranker_url: str | None = Field(default=None)  # env: BOCHA_RERANKER_URL
+    bocha_api_key: str | None = Field(default=None)  # env: BOCHA_API_KEY
     bocha_reranker_model: str = Field(default="bocha-semantic-reranker-cn")  # env: BOCHA_RERANKER_MODEL
     bocha_timeout_seconds: float = Field(default=8.0)  # env: BOCHA_TIMEOUT_SECONDS
     bocha_top_n: int = Field(default=12)  # env: BOCHA_TOP_N
 
-    langfuse_public_key: Optional[str] = Field(default=None)  # env: LANGFUSE_PUBLIC_KEY
-    langfuse_secret_key: Optional[str] = Field(default=None)  # env: LANGFUSE_SECRET_KEY
-    langfuse_base_url: Optional[str] = Field(default=None)  # env: LANGFUSE_BASE_URL
-    langfuse_host: Optional[str] = Field(default=None)  # env: LANGFUSE_HOST
+    # Reranker selection: local (sentence-transformers CrossEncoder, default) | bocha | none
+    reranker_backend: str = Field(default="local")  # env: RERANKER_BACKEND
+    local_reranker_model: str = Field(default="Qwen/Qwen3-Reranker-0.6B")  # env: LOCAL_RERANKER_MODEL
+    local_reranker_max_length: int = Field(default=8192)  # env: LOCAL_RERANKER_MAX_LENGTH
+    local_reranker_batch_size: int = Field(default=4)  # env: LOCAL_RERANKER_BATCH_SIZE
+    # none | 4bit | 8bit — BitsAndBytes quantization, CUDA only (borrowed from qwen_reranker)
+    local_reranker_quantization: str = Field(default="none")  # env: LOCAL_RERANKER_QUANTIZATION
+
+    langfuse_public_key: str | None = Field(default=None)  # env: LANGFUSE_PUBLIC_KEY
+    langfuse_secret_key: str | None = Field(default=None)  # env: LANGFUSE_SECRET_KEY
+    langfuse_base_url: str | None = Field(default=None)  # env: LANGFUSE_BASE_URL
+    langfuse_host: str | None = Field(default=None)  # env: LANGFUSE_HOST
     langfuse_enabled: bool = Field(default=False)  # env: LANGFUSE_ENABLED
 
     enable_langgraph_planner: bool = Field(default=False)  # env: ENABLE_LANGGRAPH_PLANNER
@@ -225,7 +245,7 @@ class Config(BaseSettings):
         )
 
     @property
-    def effective_langfuse_base_url(self) -> Optional[str]:
+    def effective_langfuse_base_url(self) -> str | None:
         return self.langfuse_base_url or self.langfuse_host
 
     @property

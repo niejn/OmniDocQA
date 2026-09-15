@@ -140,6 +140,8 @@ def build_sparse_query_plan(
     # document_ids/levels 等 filter 被塞入 bool.filter（不计分），
     # multi_match 的 title^2/search_hints^3/text 只对通过 filter 的文档做 BM25 评分。
     # 这与 Milvus 稀疏向量内积完全不同：此处 sparse=BM25 关键词搜索，非向量内积。
+    # Milvus 的 bm25_k1（词频饱和）和 bm25_b（长度归一化）目前没有在本项目暴露；
+    # title^N/search_hints^N 是 OpenSearch 字段 boost，不能等价替代 k1/b。
     scope = (config.opensearch_sparse_search_scope or "finance").strip().lower()
     """
     scope = (config.opensearch_sparse_search_scope or "finance").strip().lower()

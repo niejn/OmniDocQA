@@ -1,24 +1,22 @@
-"""Qdrant-backed dense retrieval implementation."""
+"""Milvus-backed dense retrieval implementation (Qdrant parity)."""
 
 from __future__ import annotations
 
-from typing import Optional
-
-from .types import NodeHit, NodeIndexRecord
-from ..vector_store import delete_document_nodes, dense_search, upsert_nodes
+from ..milvus_store import delete_document_nodes, dense_search, insert_nodes
+from .types import MetadataFilters, NodeHit, NodeIndexRecord
 
 
-class QdrantDenseBackend:
+class MilvusDenseBackend:
     def search(
         self,
         query_vector: list[float],
         *,
         document_ids: list[int],
         limit: int,
-        levels: Optional[list[int]] = None,
-        parent_ids: Optional[list[str]] = None,
-        metadata_filters: Optional[dict[str, list[str]]] = None,
-        log_stage: Optional[str] = None,
+        levels: list[int] | None = None,
+        parent_ids: list[str] | None = None,
+        metadata_filters: MetadataFilters | None = None,
+        log_stage: str | None = None,
     ) -> list[NodeHit]:
         return dense_search(
             query_vector,
@@ -33,4 +31,4 @@ class QdrantDenseBackend:
     def replace_document_nodes(self, document_id: int, nodes: list[NodeIndexRecord]) -> None:
         delete_document_nodes(document_id)
         if nodes:
-            upsert_nodes(nodes)
+            insert_nodes(nodes)

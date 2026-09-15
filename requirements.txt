@@ -14,7 +14,7 @@ langgraph>=0.2.6
 langfuse>=4.0,<5.0
 loguru>=0.7
 asyncpg>=0.29
-qdrant-client>=1.10
+pymilvus>=2.5,<3
 opensearch-py>=2.5
 openai>=1.0
 numpy>=1.26
@@ -22,8 +22,18 @@ PyMuPDF>=1.23
 pdfplumber>=0.10
 python-docx>=1.1
 chardet>=5.2
-opencc-python-reimplemented>=0.1.7
-ragas>=0.2.0
+# RAGAS: pinned to PR #2769 fix commit (lazy VertexAI imports; fixes import crash with
+# langchain-community>=0.4). Replace with `ragas>=0.4.4` once released.
+# uv quirk: if the raw-commit ref fails to resolve, clone the repo, `git checkout` the
+# SHA, and `pip install <local-dir>` instead.
+ragas @ git+https://github.com/explodinggradients/ragas@fc0d071c80d240ce3a19a0935fbde5d125d73b85
+# pyarrow 24 crashes natively (access violation) on Windows/Py3.13 inside this stack;
+# 18.1 lacks pyarrow.json_ used by the datasets chain — 21.0.0 is the verified window.
+pyarrow==21.0.0
+sentence-transformers>=4.1.0
+transformers>=4.51.0
+bitsandbytes>=0.46.0
+accelerate>=1.6.0
 
 # Optional: EDGAR HTML partitioning (standalone script scripts/run_unstructured_edgar_html.py)
 unstructured[html]>=0.16.0

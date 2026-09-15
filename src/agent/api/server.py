@@ -1,6 +1,6 @@
 """FastAPI entrypoint for the rebuilt node-centric RAG API."""
 
-import json
+import asyncio
 import logging
 
 from core.config import config
@@ -11,14 +11,23 @@ configure_runtime_logging()
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-from tools.bocha_reranker import reranker
+from tools.document_groups import default_document_groups_path, load_document_groups
 from tools.finance.financial_facts_repository import query_observations
 from tools.ingestion_service import process_document, reindex_document_vectors
 from tools.langfuse_tracing import tracer
-from tools.document_groups import default_document_groups_path, load_document_groups
-from tools.node_repository import ensure_schema, list_available_document_ids, list_document_catalog
-from tools.report_store import delete_reports, get_report, list_reports, load_evidence_full_text_for_detail, save_ask_report
+from tools.node_repository import (
+    ensure_schema,
+    list_available_document_ids,
+    list_document_catalog,
+)
+from tools.report_store import (
+    delete_reports,
+    get_report,
+    list_reports,
+    load_evidence_full_text_for_detail,
+    save_ask_report,
+)
+from tools.rerank import reranker, warmup_reranker
 
 logging.basicConfig(level=getattr(logging, config.log_level))
 logger = logging.getLogger(__name__)
@@ -82,10 +91,13 @@ async def startup_event():
             "to match compose, not 5432.)"
         ) from exc
     logger.info(
-        "Pipeline: bocha_rerank=%s langfuse=%s",
+        "Pipeline: reranker=%s langfuse=%s",
         reranker.describe_config(),
         tracer.diagnostics(),
     )
+    # Warm the local reranker in the background so the first ask request
+    # doesn't pay the model-load latency (~13s for the 4B model).
+    asyncio.create_task(warmup_reranker())
 
 
 class DiagramRequest(BaseModel):

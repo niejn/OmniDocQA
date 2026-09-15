@@ -8,7 +8,7 @@
 
 ## Summary
 
-This review documents the **core ask pipeline** of RAGAS-FINANCE through targeted Chinese comments added to 6 files. The pipeline resolves: question → finance intent routing → structured `FinanceQueryPlan` → parameterized SQL (exact facts) + hybrid BM25/dense retrieval (narrative) → optional rerank → LLM generation.
+This review documents the **core ask pipeline** of RAGAS-FINANCE through targeted implementation comments. The pipeline resolves: question → finance intent routing → structured `FinanceQueryPlan` → parameterized SQL (exact facts) + hybrid BM25/dense retrieval (narrative) → optional rerank → LLM generation.
 
 Key architectural clarifications captured:
 1. **SQL path is NOT text-to-SQL** — it's text → structured `FinanceQueryPlan` → parameterized SQL template with bind params
@@ -17,6 +17,8 @@ Key architectural clarifications captured:
 4. **`document_ids` is a metadata pre-filter** (scope), not query content — symmetric across dense (Qdrant `query_filter`) and sparse (OpenSearch `bool.filter`)
 5. **Images/charts are NOT extracted** — only HTML `<TABLE>` financial tables + narrative text; raster images silently dropped
 6. **Graceful degradation everywhere** — missing metric keys → broader SQL (no crash); ILIKE fuzzy fallback; LLM fallback on routing ambiguity
+7. **Hierarchical retrieval has two branches** — section search and leaf search are separate, each has dense+sparse RRF, then both branches are merged and reranked
+8. **Narrative retrieval is intentionally more expensive** — it expands matched sections to level-0 descendants and may use multiple rerank subqueries; descendant expansion currently has no SQL LIMIT
 
 ---
 
@@ -123,6 +125,50 @@ Question
 | **Returns** | Exact typed value (`value_numeric=383285000000`) | Text passages mentioning the concept |
 | **Precision** | 100% (authoritative) | Fuzzy (recall-oriented) |
 | **Use Case** | "Apple 2023 revenue = ?" | "Why did revenue grow?" |
+
+### Hierarchical Retrieval — Two Search Branches
+
+`rag_nodes` is a section tree. `level=0` nodes are leaf evidence chunks; `level>=1` nodes are section/navigation nodes. One RAG request can perform two independent retrieval branches:
+
+```text
+Section: Qdrant(level 1/2 or narrative depth) + sparse(level 1/2 or narrative depth)
+         → branch RRF → summary_fused
+Leaf:    Qdrant(level 0) + sparse(level 0)
+         → branch RRF → leaf_fused
+summary_fused + expanded section children + leaf_fused
+         → second RRF → reranker → final context
+```
+
+RRF only reconciles rankings; it does not replace semantic reranking. Ordinary queries expand a bounded number of direct children per matched section. Narrative queries recursively enumerate level-0 descendants so explanatory prose is available, but `fetch_leaf_descendants()` currently has no SQL `LIMIT`, which is the main latency/cost risk.
+
+### Milvus Parameters vs Qdrant/OpenSearch Parameters
+
+Milvus can configure BM25 `bm25_k1` (term-frequency saturation), `bm25_b`
+(document-length normalization), analyzer/tokenizer/filter settings, and RRF
+`k`. In this project, the equivalents are split across different systems:
+
+| Concern | Current implementation |
+|---|---|
+| Dense search | Qdrant cosine distance; HNSW approximate search with `hnsw_ef=128`, `exact=False` |
+| Sparse search | OpenSearch BM25 with default `k1`/`b`; analyzer names are optionally configurable |
+| Sparse field importance | Query boosts: `title^2.5`, `search_hints^4`, plus finance `should` boosts |
+| Hybrid fusion | Application Python RRF, hard-coded `k=60`; not Milvus `RRFRanker` |
+| Semantic reranking | Optional Bocha reranker after application-level fusion |
+
+The OpenSearch field boosts do not replace BM25 `k1`/`b`. Qdrant `hnsw_ef` is
+also unrelated: it controls how broadly the dense vector graph is searched,
+trading latency/CPU for approximate-nearest-neighbor recall.
+
+### Ordinary vs Narrative Retrieval
+
+The application normally selects the mode automatically from the finance evidence plan, not from a user-facing toggle. `need_narrative` is inferred from the question and plan:
+
+| Mode | Typical question | Section levels | Expansion | Reranking |
+|---|---|---|---|---|
+| Ordinary | “What was 2023 revenue?” | 1/2 + direct level-0 search | Direct children, per-parent capped | Usually one pass |
+| Narrative | “Why did revenue grow?” | 1..`SECTION_TREE_SEARCH_DEPTH` + level-0 search | Recursive level-0 descendants | May run up to `NARRATIVE_MULTI_RERANK_MAX_QUERIES` subqueries |
+
+Mixed questions can enable both SQL and narrative RAG, e.g. “How much did revenue grow, and why?” SQL supplies the exact amount while narrative retrieval supplies the explanation.
 
 ### Parameterized SQL — Not Text-to-SQL
 

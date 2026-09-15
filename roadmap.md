@@ -148,3 +148,49 @@ Type: Grilling
 ```
 
 SentenceTransformer 语义切分和 LLM section summary 都放在核心安全修复之后；它们是质量优化，不应成为解决 422 输入超限的前置依赖。
+
+## RAG Evaluation Roadmap
+
+### Step 1: Offline RAGAS evaluation
+
+Build a reproducible offline benchmark from the reviewed gold set described in
+`FUTURE_WORK.md`. Start with `apple_narrative_questions_100.json`, adding
+LLM-generated reference answers and gold filing passages, followed by human
+review and approval. Verify that each gold passage exists in the indexed
+corpus and maps to current nodes before scoring.
+
+The offline run should evaluate retrieval and generation separately:
+
+- retrieval: gold-node/quote recall@k, precision@k, MRR/nDCG, and filing/form/
+  period scope accuracy;
+- generation: RAGAS faithfulness, context precision, answer correctness and
+  relevancy where references are available, plus deterministic checks for
+  required numbers and citation resolution;
+- operations: latency, token usage, reranker calls, context size, and cost.
+
+Acceptance criteria:
+
+- reviewed gold records are versioned with the corpus and chunking settings;
+- the benchmark can distinguish missing corpus data, retrieval miss, and
+  generation error;
+- baseline results are reproducible for ordinary, narrative, SQL-only, and
+  mixed SQL+RAG questions.
+
+### Step 2: Online real-time evaluation
+
+Add production evaluation after each completed ask request. Persist the
+question, route/evidence plan, retrieved node IDs and contexts, answer,
+citations, latency, token usage, and reranker-call count, then run lightweight
+online scoring asynchronously so the user response is not blocked.
+
+Use RAGAS/LLM-as-a-judge only for suitable sampled traffic and retain
+deterministic checks for citation resolution, filing scope, required numeric
+facts, and known gold questions. Send scores and operational measurements to
+Langfuse or the project evaluation store, with prompt/model/config versions and
+sampling rates recorded.
+
+Online evaluation must include cost and safety controls: sampling, rate limits,
+timeouts, retry budgets, PII/secret redaction, and a fallback when the judge
+model or RAGAS service is unavailable. Compare online distributions against the
+offline baseline and alert on regressions in faithfulness, citation support,
+retrieval recall on canary questions, latency, or cost.
