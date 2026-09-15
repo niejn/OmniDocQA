@@ -1,4 +1,4 @@
-# RAG API local dependencies only: PostgreSQL + Milvus (+ OpenSearch optional)
+# RAG API local dependencies only: PostgreSQL + Milvus
 # Usage (from repo root):
 #   docker compose -f docker-compose.rag.yml up -d
 # Then in src/agent/.env match the host ports below (defaults avoid common clashes on Windows/macOS).
@@ -6,9 +6,6 @@
 # Postgres defaults to host 5433 (not 5432): a local PostgreSQL install often binds 0.0.0.0:5432,
 # so 127.0.0.1:5432 would hit the wrong server and asyncpg fails with connection reset (WinError 10054).
 # Override: POSTGRES_HOST_PORT=5432 docker compose -f docker-compose.rag.yml up -d
-#
-# OpenSearch (sparse / BM25) defaults to host 9200. Set SPARSE_BACKEND=opensearch in src/agent/.env.
-# Override: OPENSEARCH_HOST_PORT=19200 docker compose -f docker-compose.rag.yml up -d
 #
 # Milvus (dense vector store + BM25 sparse; qdrant removed at M5) defaults to host 19530.
 # etcd/minio are Milvus internals and are NOT exposed to the host. The three Milvus containers
@@ -19,7 +16,6 @@
 # Example .env (see src/agent/env.example):
 #   DB_HOST=127.0.0.1 DB_PORT=5433 DB_USER=postgres DB_PASSWORD=postgres DB_NAME=rag
 #   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/rag
-#   OPENSEARCH_HOST=127.0.0.1 OPENSEARCH_PORT=9200 SPARSE_BACKEND=opensearch
 #   MILVUS_URI=http://127.0.0.1:19530 DENSE_BACKEND=milvus
 
 services:
@@ -39,23 +35,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  opensearch:
-    image: opensearchproject/opensearch:2.17.0
-    container_name: rag-opensearch
-    environment:
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - DISABLE_SECURITY_PLUGIN=true
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    ports:
-      - "${OPENSEARCH_HOST_PORT:-9200}:9200"
-    volumes:
-      - rag_opensearch_data:/usr/share/opensearch/data
 
   # ---- Milvus standalone (dense + BM25 sparse vector store) ----
   # Image versions from the official v2.6.22 standalone compose:
@@ -148,7 +127,6 @@ services:
 
 volumes:
   rag_pg_data:
-  rag_opensearch_data:
   rag_milvus_etcd_data:
   rag_milvus_minio_data:
   rag_milvus_data:

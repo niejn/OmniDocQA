@@ -1,19 +1,19 @@
 # 开发进度（Milvus 迁移 + 评测体系）
 
 > 详细设计/决策/验收标准见 `docs/MULTIMODAL_MILVUS_MIGRATION.md`（v1.16）。本文件只记状态与证据。
-> 更新日期：2026-09-15
+> 更新日期：2026-09-15（M4 定论 + M5' opensearch 移除）
 
 ## 当前状态总览
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
 | 稠密检索 | ✅ Milvus only（1A + M5 移除 qdrant，2026-09-15） | dense_qdrant/vector_store/qdrant-client/compose service+卷 全部删除；factory milvus-only |
-| 稀疏检索 | ✅ Milvus BM25 + text 加权 + 查询侧 scope（2026-09-15） | `SPARSE_BACKEND=milvus`；text 加权 + 年份/form 硬过滤下推（`QUERY_SCOPE_FILTER_ENABLED`） |
+| 稀疏检索 | ✅ Milvus BM25 + text 加权 + 查询侧 scope（M5' 后 milvus/postgres 双选, 默认 milvus） | opensearch 已于 2026-09-15 全量移除 |
 | 融合 | 应用层 RRF（k=60） | 1C/M6 计划下沉 Milvus `hybrid_search`，评测门禁未过不切 |
 | Reranker | ✅ 本地 Qwen3-Reranker-4B | `RERANKER_BACKEND=local`，Bocha 级联回退；不下沉 Milvus（见"关键结论"） |
 | RAGAS 评测 | ⚠️ R1 已修，指标仅 2 个 | ragas 0.4.4.dev9 可用；R2 数据集增强/R3 全量指标未做 |
 | 生成 LLM | ✅ glm-5.3 走 ark 套餐端点 | 模型名带连字符，`glm5.3` 会被 404 |
-| M4 质量门禁 | ⚠️ 已跑(2026-09-14), context_precision 未达标 | faithfulness PASS(+2.14% 提升); context_precision FAIL(-3.95%); 详见 09-14 时间线 |
+| M4 质量门禁 | ✅ 定论(2026-09-15, 用户决策): 接受误差 | faithfulness +2.14% PASS; context_precision -3.95% 已归因(OS 假阳性+源数据缺失), 接受不再对照; opensearch 已移除 |
 | 第二~五部分（多模态/前端/RAGAS 重构/通用化） | ❌ 未开发 | 需求定稿在迁移文档 §4-§8.5 |
 
 ## 已完成时间线
@@ -39,6 +39,11 @@
 
 
 
+
+
+### 2026-09-15（下午）
+- **M4 定论（用户决策）**：接受 context_precision -3.95% 误差（faithfulness +2.14% PASS 已证答案质量无损；差距已归因于 OS 轮假阳性与封面页源数据缺失），不再重评对照。
+- **M5' opensearch 全量移除**：删 `sparse_opensearch.py`/`inspect_opensearch.py`/config 12 字段/factory 分支(sparse 默认 milvus)/delete 脚本分支/`opensearch-py` 依赖/compose service+卷+注释/容器+卷。70 单测全绿（混配校验测试随 dense milvus-only 而废弃，改为断言 opensearch removed）。检索栈收敛：**dense=Milvus 唯一, sparse=milvus(默认)|postgres**。
 
 ### 2026-09-15
 - **查询侧 scope 下推落地**（M4 context_precision FAIL 的架构修复）：
@@ -97,7 +102,7 @@ Milvus 原生"重排"只有 `hybrid_search` 的 **RRFRanker/WeightedRanker**—�
 
 ## 下一步（按迁移文档 §6.8）
 
-1. **M4 处置决策**：context_precision -3.95% 未达标——选调参重评 / 接受 / M6 补偿（见 09-14 时间线）。
+1. ~~M4 处置决策~~ ✅ 已定论接受误差（09-15）。
 
 3. 1C（可选）：融合下沉 Milvus，先过 RRFRanker 与应用层 RRF 排序一致性单测。
 4. R2 数据集增强 → R3 全量 RAGAS 指标 → R5/R6/R7 选型与回归。

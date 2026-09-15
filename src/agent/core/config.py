@@ -68,7 +68,8 @@ class Config(BaseSettings):
 
     # Dense vector backend: milvus only (qdrant removed at M5, 2026-09-15).
     dense_backend: str = Field(default="milvus")  # env: DENSE_BACKEND
-    sparse_backend: str = Field(default="postgres")  # env: SPARSE_BACKEND
+    # Sparse (BM25) backend: milvus only (opensearch removed at M5-prime, 2026-09-15).
+    sparse_backend: str = Field(default="milvus")  # env: SPARSE_BACKEND
 
     milvus_uri: str = Field(default="http://127.0.0.1:19530")  # env: MILVUS_URI
     milvus_user: str | None = Field(default=None)  # env: MILVUS_USER
@@ -86,20 +87,6 @@ class Config(BaseSettings):
     # Query-side scope narrowing: explicit year/form mentions in a question become a
     # document-level hard filter before dense/sparse retrieval (2026-09-14 M4 fix).
     query_scope_filter_enabled: bool = Field(default=True)  # env: QUERY_SCOPE_FILTER_ENABLED
-
-    opensearch_host: str = Field(default="127.0.0.1")  # env: OPENSEARCH_HOST
-    opensearch_port: int = Field(default=9200)  # env: OPENSEARCH_PORT
-    opensearch_user: str | None = Field(default=None)  # env: OPENSEARCH_USER
-    opensearch_password: str | None = Field(default=None)  # env: OPENSEARCH_PASSWORD
-    opensearch_use_ssl: bool = Field(default=False)  # env: OPENSEARCH_USE_SSL
-    opensearch_verify_certs: bool = Field(default=True)  # env: OPENSEARCH_VERIFY_CERTS
-    opensearch_timeout_seconds: float = Field(default=15.0)  # env: OPENSEARCH_TIMEOUT_SECONDS
-    opensearch_sparse_index: str = Field(default="rag_nodes_sparse")  # env: OPENSEARCH_SPARSE_INDEX
-    opensearch_sparse_index_finance: str | None = Field(default=None)  # env: OPENSEARCH_SPARSE_INDEX_FINANCE
-    # sparse：finance=仅财务索引；all=财务索引 + OPENSEARCH_SPARSE_INDEX（默认兜底，便于扩展第二域时再拆分）
-    opensearch_sparse_search_scope: str = Field(default="finance")  # env: OPENSEARCH_SPARSE_SEARCH_SCOPE
-    opensearch_sparse_analyzer: str | None = Field(default=None)  # env: OPENSEARCH_SPARSE_ANALYZER
-    opensearch_sparse_search_analyzer: str | None = Field(default=None)  # env: OPENSEARCH_SPARSE_SEARCH_ANALYZER
 
     embedding_model: str = Field(default="text-embedding-v3")  # env: EMBEDDING_MODEL
     embedding_dimension: int = Field(default=1536)  # env: EMBEDDING_DIMENSION

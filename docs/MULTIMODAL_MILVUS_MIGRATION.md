@@ -1,7 +1,7 @@
 # 多模态 RAG 与 Milvus 迁移需求文档 (v1.17)
 
 - 日期: 2026-09-11
-- 状态: 第一部分 1A/1B+BM25 text 加权已落地(dense+sparse 均走 Milvus, text=title×2+hints×3+正文), 评测门禁 M4 未跑; 第二~五部分未进入开发
+- 状态: 第一部分完成并定论(dense=Milvus 唯一, sparse=milvus 默认|postgres; M4 接受误差; qdrant/opensearch 已移除); 第二~五部分未进入开发
 - 参考: `D:\mashibing\RAG_RAGAS\code` (DOTS·OCR 解析器 + Multimodal_RAG 链路 + Milvus collection 建法)
 
 ## 0. 背景与目标
@@ -176,7 +176,8 @@ qdrant/opensearch 本期保持默认启动(切换前仍是现网后端); **1A �
 | M2 重建 — **已完成(2026-09-09)** | 切 `DENSE_BACKEND=milvus` → `ingest-edgar-local --document-id-start 999001` 重跑 70 文档(同 ID 原地 replace, next_document_id=999071, success:false=0)→ 对账 PASS: PG has_vector 节点 7541 = Milvus 行数 7541, 逐文档数量零偏差, 53 个抽样 text 哈希零不一致; E2E 检索验证: 真实管线 dense_hits=60(Milvus)+ sparse_hits=45(OpenSearch)→ RRF → Bocha rerank → 兄弟扩展, 命中相关章节正常 | 改 env 回 qdrant(未重跑无损语义见 §3.9 回滚行) |
 | M2-① 盘点结果(2026-09-09) | 70 文档全部 `sec_edgar_html`, 源 .htm 与 accession 一一对应, 不可重建清单为空; 规模 7541 向量节点; **勘误**: 999036–999066 老文档"向量少"非当年 embedding 故障 — 源 .htm 本身仅封面页(word_count≈550–660, element_count=1), 重入库确定性保持 2–3 节点; 999063/999065 源无文本 → 零向量, 与重建前一致 | — |
 | M4 质量验收 — **已跑(2026-09-14), 部分达标** | 两轮 100 题+RAGAS 零失败: faithfulness 0.9145 vs 0.8954(+2.14% PASS, 正向); context_precision 0.6984 vs 0.7271(**-3.95% FAIL**)。归因: 单列 BM25 的 TF enrichment 无法完全复刻 OS 字段加权的头部排序质量。处置选项: 调 enrichment 次数重评 / 接受差距 / M6 WeightedRanker 补偿 | 不达标回 M2 前(改回 qdrant) |
-| M5 收尾清理(1A) — **已完成(2026-09-15)** | 删 qdrant compose service/卷(两文件)+容器/卷; 删 `dense_qdrant.py`、`vector_store.py`(零引用死文件); factory milvus-only(default 改 milvus); 删 `qdrant-client` 依赖; config 删 QDRANT_* 字段; env.example 清理; delete 脚本/测试同步。70 单测全绿, 双 compose config 校验通过。**opensearch 保留**(M4 重评 baseline) | git revert |
+| M5 收尾清理(1A) — **已完成(2026-09-15)** | 删 qdrant compose service/卷(两文件)+容器/卷; 删 `dense_qdrant.py`、`vector_store.py`(零引用死文件); factory milvus-only(default 改 milvus); 删 `qdrant-client` 依赖; config 删 QDRANT_* 字段; env.example 清理; delete 脚本/测试同步。70 单测全绿, 双 compose config 校验通过 | git revert |
+| M5' opensearch 移除 — **已完成(2026-09-15, M4 定论后)** | M4 定论: **接受 context_precision -3.95%**(用户决策, 归因见 DEV_PROGRESS 09-14); 删 `sparse_opensearch.py`/`inspect_opensearch.py`/config opensearch_* 12 字段/factory 分支(sparse 默认 milvus, 保留 postgres 回退)/delete 脚本分支/`opensearch-py`/compose service+卷+容器。检索栈最终形态: **dense=Milvus 唯一, sparse=milvus(默认)|postgres** | git revert |
 | M6 融合切换(= Step 1C, 可选, 1B 之后) | 前置: `RRFRanker(k)` 与现网 RRF 的 k/归一化对齐(不等价则调 k 或放弃); `SparseQueryPlan` 字段权重映射决策(见 3.9)。同一评测集 `app_rrf` vs `milvus` 对比, 指标不回退(±2%)且 P95 延迟下降方达标 → 切 `FUSION_BACKEND=milvus`; 不达标保持默认 | 改 env |
 
 ### 3.7 写路径改造
@@ -624,3 +625,5 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.16 | BM25 text 加权落地(§3.9 预案提前执行, 用户决策): `build_enriched_text`(title×2+hints×3, repeats 可配/0 禁用)+前缀标记 `metadata._milvus_text_prefix_chars`+dense/sparse 命中剥离+`scripts/milvus_rebuild_text.py` upsert 重建(7541 行 26s, 对账零偏差, PK 唯一); stats row_count 滞后为显示层现象; 60 单测(新增 6)+冒烟(liquidity top5 全中章节)+E2E 通过; ingest 写路径同步生效 |
 | 2026-09-14 | M4 评测落地: m4_benchmark.py 两轮 A/B(断点续跑+评分+报告); faithfulness PASS(+2.14%), context_precision FAIL(-3.95%) → 整体未过门禁, 处置待决策 | 顺带修复: ark 推理模型 thinking 耗尽致 judge 空 content(注入 thinking:disabled), RAGAS NaN 落库, 分数入 jobs.metadata, 孤儿 server 竞态 |
 | v1.18 | M5 执行: qdrant 全量移除(代码/依赖/compose/容器/卷); factory dense=milvus 唯一; opensearch 保留待 M4 定论 |
+| 2026-09-15 | M4 定论: 接受 context_precision -3.95% 不再对照(faithfulness +2.14% PASS; 差距归因 OS 假阳性+源数据缺失); 执行 M5' opensearch 全量移除 | 用户决策: 误差可接受, 不再投入对照成本; 检索栈收敛 Milvus |
+| v1.19 | M4 定论(接受误差) + M5' opensearch 移除; 检索栈最终形态 dense=Milvus only / sparse=milvus 默认+postgres 回退 |

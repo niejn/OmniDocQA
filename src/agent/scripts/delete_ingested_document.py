@@ -39,24 +39,17 @@ async def _delete_one(document_id: int, *, skip_pg: bool) -> dict:
 
     MilvusDenseBackend().replace_document_nodes(document_id, [])
 
-    # Sparse backend
-    sparse_backend_name = (config.sparse_backend or "postgres").strip().lower()
-    if sparse_backend_name == "postgres":
-        from tools.retrieval_backends.sparse_postgres import PostgresSparseBackend
-
-        await PostgresSparseBackend().replace_document_nodes(document_id, [])
-    elif sparse_backend_name == "opensearch":
-        try:
-            from tools.retrieval_backends.sparse_opensearch import OpenSearchSparseBackend
-        except Exception as exc:
-            print(f"[warn] OpenSearch client unavailable, skipping sparse cleanup: {exc}")
-        else:
-            await OpenSearchSparseBackend().replace_document_nodes(document_id, [])
-    elif sparse_backend_name == "milvus":
+    # Sparse backend (milvus rows are shared with dense; postgres keeps nodes in PG)
+    sparse_backend_name = (config.sparse_backend or "milvus").strip().lower()
+    if sparse_backend_name == "milvus":
         from tools.retrieval_backends.sparse_milvus import MilvusSparseBackend
 
         # No-op: dense=milvus delete above already removed the shared rows.
         await MilvusSparseBackend().replace_document_nodes(document_id, [])
+    elif sparse_backend_name == "postgres":
+        from tools.retrieval_backends.sparse_postgres import PostgresSparseBackend
+
+        await PostgresSparseBackend().replace_document_nodes(document_id, [])
     else:
         raise ValueError(f"Unsupported sparse backend: {config.sparse_backend!r}")
 

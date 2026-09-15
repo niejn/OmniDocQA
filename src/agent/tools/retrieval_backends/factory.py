@@ -8,7 +8,6 @@ from core.config import config
 
 from .dense_milvus import MilvusDenseBackend
 from .sparse_milvus import MilvusSparseBackend
-from .sparse_opensearch import OpenSearchSparseBackend
 from .sparse_postgres import PostgresSparseBackend
 from .types import DenseBackend, SparseBackend
 
@@ -26,18 +25,12 @@ def get_dense_backend() -> DenseBackend:
 
 @lru_cache(maxsize=1)
 def get_sparse_backend() -> SparseBackend:
-    backend = (config.sparse_backend or "postgres").strip().lower()
+    backend = (config.sparse_backend or "milvus").strip().lower()
     if backend == "milvus":
-        dense = (config.dense_backend or "milvus").strip().lower()
-        if dense != "milvus":
-            raise ValueError(
-                "SPARSE_BACKEND=milvus requires DENSE_BACKEND=milvus: the shared "
-                "rag_nodes rows (text + BM25 sparse vector) are only written by "
-                "the Milvus dense backend."
-            )
         return MilvusSparseBackend()
     if backend == "postgres":
         return PostgresSparseBackend()
-    if backend == "opensearch":
-        return OpenSearchSparseBackend()
-    raise ValueError(f"Unsupported sparse backend: {config.sparse_backend!r}")
+    raise ValueError(
+        f"Unsupported sparse backend: {config.sparse_backend!r} "
+        "(opensearch was removed at M5-prime; sparse retrieval is milvus|postgres)"
+    )

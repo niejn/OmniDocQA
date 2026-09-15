@@ -416,16 +416,15 @@ def test_sparse_backend_replace_document_nodes_is_noop(fake_client: FakeClient) 
     assert fake_client.deleted_filters == []
 
 
-def test_factory_sparse_milvus_requires_milvus_dense(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_sparse_selects_milvus_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     factory.get_sparse_backend.cache_clear()
     monkeypatch.setattr(config, "sparse_backend", "milvus")
-    monkeypatch.setattr(config, "dense_backend", "qdrant")
-    with pytest.raises(ValueError, match="SPARSE_BACKEND=milvus requires DENSE_BACKEND=milvus"):
-        factory.get_sparse_backend()
+    assert isinstance(factory.get_sparse_backend(), MilvusSparseBackend)
 
     factory.get_sparse_backend.cache_clear()
-    monkeypatch.setattr(config, "dense_backend", "milvus")
-    assert isinstance(factory.get_sparse_backend(), MilvusSparseBackend)
+    monkeypatch.setattr(config, "sparse_backend", "opensearch")
+    with pytest.raises(ValueError, match="opensearch was removed at M5-prime"):
+        factory.get_sparse_backend()
     factory.get_sparse_backend.cache_clear()
 
 

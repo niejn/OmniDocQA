@@ -1,4 +1,3 @@
-# 合并文件：RAG 依赖 (Postgres + Qdrant + OpenSearch) + Langfuse v3 服务端
 #
 # 用法（仓库根目录，全新启动，不保留旧数据）：
 #   docker compose -f docker-compose.ragall.yml up -d
@@ -9,14 +8,12 @@
 #      - postgres  : 单一共享实例（postgres:17，全新初始化），主机 5433（容器 5432）
 #          · RAG 用库 rag（POSTGRES_DB=rag）
 #          · Langfuse 用默认库 postgres（PG 安装后自带的维护库，始终存在）
-#      - opensearch: 主机 9200（SPARSE_BACKEND=opensearch 时使用）
 #   2) Langfuse v3（来自 docker-compose.langfuse.yml，与本项目 langfuse>=3.0.0 客户端匹配）
 #      - langfuse-web : 主机 3001（容器 3000）
 #      - langfuse-worker / clickhouse / redis / minio
 #      （Langfuse 的 postgres 依赖指向同一个共享 postgres 服务，库名 postgres）
 #
 # 端口速查（主机侧）：
-#   RAG:   5433(pg) 6433(qdrant) 9200(opensearch)
 #   Langfuse: 3001(web) 9090(minio) 8123/9000(clickhouse 仅本地) 6379(redis 仅本地)
 #   postgres 主机 5432 不再对外暴露（仅容器网络内 5432 供 Langfuse 使用）
 #
@@ -44,23 +41,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  opensearch:
-    image: opensearchproject/opensearch:2.17.0
-    container_name: rag-opensearch
-    environment:
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - DISABLE_SECURITY_PLUGIN=true
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    ports:
-      - "${OPENSEARCH_HOST_PORT:-9200}:9200"
-    volumes:
-      - rag_opensearch_data:/usr/share/opensearch/data
 
   # ── Langfuse v3（原 docker-compose.langfuse.yml） ───────────────
   langfuse-worker:
@@ -222,8 +202,6 @@ services:
 
 volumes:
   rag_pg_data:
-    driver: local
-  rag_opensearch_data:
     driver: local
   langfuse_clickhouse_data:
     driver: local

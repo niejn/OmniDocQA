@@ -1512,13 +1512,6 @@ def _build_pipeline_trace(
         "evidence_controller": dbg.get("evidence_controller"),
         "sql_rag_narrowing": dbg.get("sql_rag_narrowing"),
         "runtime_config": {
-            "opensearch_sparse_analyzer_env": os.getenv("OPENSEARCH_SPARSE_ANALYZER"),
-            "opensearch_sparse_search_analyzer_env": os.getenv("OPENSEARCH_SPARSE_SEARCH_ANALYZER"),
-            "opensearch_sparse_analyzer_effective": config.opensearch_sparse_analyzer,
-            "opensearch_sparse_search_analyzer_effective": config.opensearch_sparse_search_analyzer,
-            "opensearch_sparse_index": config.opensearch_sparse_index,
-            "opensearch_sparse_index_finance": config.opensearch_sparse_index_finance,
-            "opensearch_sparse_search_scope": config.opensearch_sparse_search_scope,
             "sparse_backend": config.sparse_backend,
         },
         "retrieval_compare_meta": {
