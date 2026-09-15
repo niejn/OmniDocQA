@@ -631,3 +631,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.19 | M4 定论(接受误差) + M5' opensearch 移除; 检索栈最终形态 dense=Milvus only / sparse=milvus 默认+postgres 回退 |
 | v1.20 | 第二部分 v2 实施设计定稿(`MULTIMODAL_RAG_PART2_DESIGN.md`): dots.ocr 源码级借鉴映射、三类多模态模型支持矩阵、密集向量后端 env 切换(milvus_multimodal)与零改动边界 |
 | v1.21 | 二期设计增量: 图片资产两期存储策略 — 一期 local(MULTIMODAL_PAGES_DIR) / 二期 MinIO, 接口一期定型(`multimodal_asset_store.py`), asset key 两期同构保证 Milvus 数据与 API 契约零迁移 |
+| v1.22 | 二期设计补全: 实现蓝图(9 文件级职责+签名, 关键实现决策: bbox 裁剪插图/跨页标题继承/filtered 页/协议兼容)、错误处理矩阵、CLI 契约(退出码/幂等/上限防护)、测试计划、性能预算与可观测性 |

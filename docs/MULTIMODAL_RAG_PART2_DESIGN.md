@@ -260,6 +260,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | layout JSON 偶发解析失败 | 官方 filtered 降级路径照抄(存原始响应入失败清单, 不中断整批) |
 | DashScope 限流 | 固定窗口+退避复刻(参考已验证 120RPM 稳定) |
 | 中文 PDF 的 BM25 jieba 分词质量 | v1 检索不走 sparse, 无影响; P2 启用 sparse 时再评 |
+| bbox 坐标系(smart_resize vs 页图像素)映射错位 | §14.1-1: MM-1 首跑真 PDF 打印 bbox 与页图尺寸比对验证; 错位则加比例修正 |
 | **开放**: vLLM 服务部署位置(本机 4090/远端) | 不阻塞设计; MM-1 前用户确认, 文档已给 docker 启动命令 |
 
 ## 13. 对 v1 §4 的覆盖汇总
@@ -271,3 +272,78 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | §4.3 library API | 契约沿用, multimodal 检索改经新 DenseBackend |
 | §4.5 验收 | 扩为 §10(增加零改动回归门禁与混配矩阵) |
 | (新增) | 零改动边界 / factory 切换与校验矩阵 / ask 守卫 / 模型支持矩阵 |
+
+## 14. 实现蓝图 (文件级, MM-1 自底向上)
+
+| # | 文件 | 职责与关键签名 | 依赖 |
+|---|---|---|---|
+| 1 | `tools/multimodal_asset_store.py` | `MultimodalAssetStore` 协议(save/open/delete_document) + `LocalFileAssetStore`(防穿越内聚) + `get_asset_store()` env 分发(lru_cache) | 无 |
+| 2 | `tools/dots_ocr_client.py` | `ParsedPage{page_no, layout, md_content, page_image_jpg}`; `DotsOcrClient.healthy()/parse_pdf()/parse_pdf_fitz_fallback()`; `layout_to_md(page)` 自实现 | openai(现有), fitz, Pillow |
+| 3 | `tools/multimodal_chunker.py` | `MmChunk{kind, page_no, title, text, image_name, category}`; `chunk_document(pages)`; `_semantic_split()` 复用现有文本 embedding 仅作分块判据 | 2 |
+| 4 | `tools/multimodal_vlm.py` | `describe_image(image_b64, prev_text, next_text) -> str`(≤300字) | openai(现有) |
+| 5 | `tools/multimodal_vectorizer.py` | `detect_dim()/embed_texts()/embed_image_with_text()`; RPM 窗口+429 退避+截断标记 | dashscope |
+| 6 | `tools/retrieval_backends/dense_milvus_multimodal.py` | `ensure_collection()/upsert_document_nodes()/search()/replace_document_nodes()`; 连接复用 milvus_store 单例模式, collection 操作独立方法 | 5 |
+| 7 | `scripts/ingest_multimodal_pdf.py` | 六步编排 CLI(§16) | 1-6 |
+| 8 | `tools/library/library_service.py` + `library_api.py` | §8 契约; multimodal 路显式实例化新 backend | 6 |
+| 9 | 接缝×3 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵; `rag_service.answer_question` 3 行守卫; `delete_ingested_document` 多模态分支(删点+`assets.delete_document`) | 6 |
+
+### 14.1 关键实现决策 (设计期定死, 实现期不再议)
+
+1. **插图来源 = bbox 裁剪**: dots.ocr 的 Picture 元素只有 bbox 无 bytes → PIL 在 dpi=200 整页图上裁剪。**坐标系风险**: 模型输出 bbox 可能基于 `smart_resize` 后分辨率, 裁剪前按 `input_height/input_width ↔ 页图高宽` 比例映射; MM-1 首跑用真 PDF 打印 bbox vs 页图尺寸验证一次。
+2. **md 中图片表达**: `layout_to_md` 对 Picture 输出 `![image_{n}](image_{md5}.jpg)` 占位; chunker 按占位正则抽取, 裁剪后的 jpg 经 asset store 落盘, `image_name` 记入 MmChunk。
+3. **跨页章节**: v1 不跨页合并 section; 页首无标题时 title 层级继承上一页末层级(课件类 PDF 章节跨页高频, 简化可接受)。
+4. **协议兼容**: `MilvusMultimodalDenseBackend` 实现现有 `DenseBackend` 协议(方法签名兼容, 入参为结构化 dataclass); `search` 返回 `MmHit{kind, document_id, filename, title, page_no, score, text_preview, image_ref?}`。
+5. **filtered 页处理**: layout JSON 解析失败的页保留原始响应作 md(纯文本降级语义), layout 置空 → 该页无插图块, 不中断整批。
+
+## 15. 错误处理矩阵 (各阶段失败行为)
+
+| 阶段 | 失败 | 行为 | 载体 |
+|---|---|---|---|
+| 解析 | vLLM 不可达 | `DOT_OCR_FALLBACK_FITZ=true` → fitz 降级整批; false → CLI 退出码 2 | log_rag stage=parse |
+| 解析 | 单页 JSON 解析失败 | filtered 降级(§14.1-5), 计入失败页清单 | 失败清单 JSON |
+| 解析 | 单页请求超时/异常 | 同 filtered; 重试 1 次 | 同上 |
+| 描述 | VLM 单图失败 | 该 image 块 text=空描述占位(`[图片描述生成失败]`), 不向量化阻塞; 计入失败块清单 | 失败清单 |
+| 向量化 | 429 | 指数退避 5 次(120RPM 窗口内) | log |
+| 向量化 | 退避耗尽/其它异常 | 整批 fail-fast(半入库状态由幂等重跑覆盖) | CLI 退出码 3 |
+| 存储 | 维度不符 collection | upsert 前 fail-fast, 报"换模型须重建 collection" | ValueError |
+| 检索 | embedding 失败/Milvus 故障 | API 502 | /library |
+| 检索 | asset 缺失(image_ref 指向不存在) | 证据卡降级为纯文字(text_preview), `image_url` 省略 | /library |
+| 检索 | collection 空/未建 | 200 + evidence=[] + answer=null (`available=false` 见 /collections) | /library |
+
+## 16. CLI 契约 (`ingest_multimodal_pdf.py`)
+
+```
+参数: --data-dir --glob "*.pdf" --document-id-start N
+      [--no-fallback]  # 禁 fitz 降级(默认开)
+输出: 每文档一行摘要 {document_id, filename, pages, chunks_text, chunks_image, filtered_pages, failed_images, elapsed_s}
+      失败清单: {document_id}/ingest_report.json (页级/块级失败明细, 供重跑定位)
+退出码: 0=成功(含 filtered 降级页) | 2=解析不可达且禁降级 | 3=向量化/存储失败 | 4=参数/文件错误
+幂等: 同 document_id 重跑 = 先删点再全量写, 点数不变(验收 §10-4)
+上限防护: 单文档 >500 页 或 PDF>200MB → 拒绝并提示(防打爆磁盘/批任务时长)
+```
+
+## 17. 测试与验证计划
+
+单测(不依赖外部服务, 按依赖顺序):
+
+| 模块 | 用例 |
+|---|---|
+| `layout_to_md` | 11 类 category 各一行 → md 断言(table→HTML/formula→latex/Picture→占位/header-footer 跳过); 空布局; filtered 页 |
+| chunker | 标题边界/层级串; 跨页标题继承; 插图占位抽取+正文去图; >1000 字语义分块(mock embedding); 无标题页兜底单块 |
+| asset store | save/open roundtrip; 路径穿越拒绝(`../`/绝对路径/符号链接); delete_document 幂等 |
+| vectorizer | 429 退避节奏(mock 时钟); RPM 窗口; dim 探测; 截断标记 |
+| backend | FakeClient(仿 test_milvus_store) 幂等删插; 维度校验失败路径; search 字段映射 |
+| factory | 混配矩阵: mm+none ✓ / mm+milvus raise / none 单独+text dense 合法性 |
+| library_service | text/multimodal 分支(mock); 502/空集合契约; image_ref 缺失降级 |
+
+端到端(需服务): 真 PDF 入库(点数/幂等/停 vLLM 降级); bbox 坐标验证(§14.1-1); curl 验收 §10-5; 70 存量单测回归 + `/ask` 冒烟(零改动证明)。
+
+## 18. 性能预算与可观测性
+
+| 项 | 预算/口径 |
+|---|---|
+| 解析吞吐 | vLLM 单卡 ~15-30 页/分钟(官方 batch 推理量级); 100 页课件 ≈ 4-7 分钟, 线程池 16 并发请求 |
+| embedding 吞吐 | 120RPM 上限 → 100 页(~200 块) ≈ 2 分钟; 入库总时长主要受解析支配 |
+| 检索延迟 | multimodal 路 = 1 次 embedding(API ~200ms) + 1 次 Milvus search(<50ms); P95 目标 <1.5s(不含生成) |
+| 磁盘 | dpi=200 页图 ~150-300KB/页 + 插图; 100 页课件 ≈ 30-60MB(文档注明, 二期 MinIO 解耦) |
+| 可观测 | `log_rag` 新 stage: parse/chunk/describe/embed/upsert 各记 {document_id, counts, elapsed}; /library 响应带 trace_id+latency_ms(沿用现有中间件) |
