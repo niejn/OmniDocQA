@@ -224,6 +224,8 @@ qdrant/opensearch 本期保持默认启动(切换前仍是现网后端); **1A �
 
 全部 47 项单测通过。
 
+> **v2 实施设计已定稿(2026-09-15)**: 见 `MULTIMODAL_RAG_PART2_DESIGN.md` — 基于 dots.ocr 源码级调研细化本文 §4, 并新增硬约束: 现有密集向量链路零改动、`DENSE_BACKEND=milvus_multimodal` env 切换。冲突处以 v2 为准。
+
 ## 4. 第二部分: 多模态后端
 
 ### 4.1 新增配置
@@ -627,3 +629,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.18 | M5 执行: qdrant 全量移除(代码/依赖/compose/容器/卷); factory dense=milvus 唯一; opensearch 保留待 M4 定论 |
 | 2026-09-15 | M4 定论: 接受 context_precision -3.95% 不再对照(faithfulness +2.14% PASS; 差距归因 OS 假阳性+源数据缺失); 执行 M5' opensearch 全量移除 | 用户决策: 误差可接受, 不再投入对照成本; 检索栈收敛 Milvus |
 | v1.19 | M4 定论(接受误差) + M5' opensearch 移除; 检索栈最终形态 dense=Milvus only / sparse=milvus 默认+postgres 回退 |
+| v1.20 | 第二部分 v2 实施设计定稿(`MULTIMODAL_RAG_PART2_DESIGN.md`): dots.ocr 源码级借鉴映射、三类多模态模型支持矩阵、密集向量后端 env 切换(milvus_multimodal)与零改动边界 |
