@@ -133,9 +133,10 @@ DASHSCOPE_API_KEY=           # 密钥仅经 env, 严禁硬编码(参考仓库的
 # --- 图片描述 VLM ---
 MULTIMODAL_VLM_MODEL=qwen-vl-plus
 
-# --- 存储 ---
+# --- 存储 (图片资产两期策略见 §6) ---
+MULTIMODAL_ASSET_STORE=local             # local(一期默认) | minio(二期)
 MULTIMODAL_COLLECTION=rag_multimodal
-MULTIMODAL_PAGES_DIR=tools/data/multimodal_pages
+MULTIMODAL_PAGES_DIR=tools/data/multimodal_pages   # local 模式根目录; minio 模式忽略
 LIBRARY_ASK_DEFAULT_TOP_K=8
 
 # --- 切换 (§4) ---
@@ -159,7 +160,7 @@ SPARSE_BACKEND=milvus                 # milvus | postgres | none(新, 仅配套 
 | `page_no` | INT64 | 页码(0-based) |
 | `text` | VARCHAR | BM25 输入(正文/image 描述); jieba analyzer |
 | `category` | VARCHAR | layout category(降级模式为 `fitz`) |
-| `image_ref` | VARCHAR | 图片相对路径(`{document_id}/{name}.jpg`), 仅 image 块 |
+| `image_ref` | VARCHAR | **asset key**(`{document_id}/{name}.jpg`), 与存储后端无关, 仅 image 块 |
 | `sparse` | SPARSE_FLOAT_VECTOR | Milvus BM25 Function 自动生成, **v1 查询不用**(预留) |
 | `dense` | FLOAT_VECTOR(dim=探测) | 多模态向量, COSINE + AUTOINDEX |
 
@@ -169,7 +170,35 @@ v1 检索仅 dense; sparse 字段为 §7 P2 预留(与 rag_nodes 的 text 加权
 
 新行 `metadata`: `{source: "multimodal_pdf", pages: N, chunks: {text: X, image: Y}, dpi: 200, embedding_model: ...}`。catalog/删除工具复用。
 
-### 落盘布局
+### 图片资产存储 (两期策略, 接口一期定型)
+
+**切分图片(插图+整页图)的存取统一走 asset store 抽象**, 新 `tools/multimodal_asset_store.py`:
+
+```python
+class MultimodalAssetStore(Protocol):
+    def save(self, document_id: int, name: str, data: bytes) -> str: ...      # 返回 asset key
+    def open(self, document_id: int, name: str) -> bytes: ...                  # KeyError=缺失
+    def delete_document(self, document_id: int) -> None: ...                   # 删除工具复用
+```
+
+- **一期 local**(默认): `LocalFileAssetStore` → `MULTIMODAL_PAGES_DIR/{document_id}/{name}.jpg`; 路径穿越校验内聚于此。
+- **二期 minio**: `MinioAssetStore` → bucket `rag-multimodal`, object key 与一期完全同构(`{document_id}/{name}.jpg`)。
+
+**关键不变量**: Milvus `image_ref` 与 API 契约中的 `image_url` 参数只出现 **asset key**, 永不出现绝对路径/presigned URL。因此 一期→二期 迁移 = 换 env + 数据搬迁脚本, **Milvus 点数据零迁移、API 契约零改动、前端零改动**。
+
+二期(`/library/page-image` 行为不变, 后端从 MinIO 流式代理; presigned URL 直连为后续优化):
+
+```
+MULTIMODAL_ASSET_STORE=minio
+MINIO_ENDPOINT=127.0.0.1:9000
+MINIO_ACCESS_KEY= / MINIO_SECRET_KEY=
+MINIO_BUCKET=rag-multimodal
+MINIO_SECURE=false
+```
+
+二期新增依赖 `minio` SDK + 独立 compose service `rag-minio`(不复用 langfuse 的 minio 或 milvus 内嵌 minio — 生命周期不同); 一期不引入。迁移工具: `scripts/multimodal_assets_migrate.py`(遍历本地目录上传 + 抽样校验字节数)。
+
+一期落盘布局(local 模式):
 
 ```
 MULTIMODAL_PAGES_DIR/
@@ -215,11 +244,12 @@ v1 §4.3 契约全部沿用(ask/collections/page-image 三端点、请求响应�
 
 | 阶段 | 内容 | 交付物 |
 |---|---|---|
-| **MM-1 解析+入库** | `dots_ocr_client.py` + 分块 + `multimodal_vectorizer.py` + `dense_milvus_multimodal.py` + CLI | 真 PDF 入库, 验收 1/3/4 |
+| **MM-1 解析+入库** | `dots_ocr_client.py` + 分块 + `multimodal_vectorizer.py` + `dense_milvus_multimodal.py` + `multimodal_asset_store.py`(抽象+local 实现) + CLI | 真 PDF 入库, 验收 1/3/4 |
 | **MM-2 检索 API** | `library_api.py` + `library_service.py` + `SPARSE_BACKEND=none` + ask 守卫 | 验收 2/5/6 |
 | **MM-3 前端** | 第三部分 `/library` 页(独立设计, 见迁移文档 §5) | 验收 5 的 UI 面 |
+| **二期 MinIO 资产迁移** | `MinioAssetStore` + `scripts/multimodal_assets_migrate.py` + compose `rag-minio`; env 切 `MULTIMODAL_ASSET_STORE=minio` | 图片字节抽样校验全等, API/前端零改动 |
 
-MM-1/MM-2 后端可独立验收; 前端不阻塞。
+MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收后独立排期(asset store 接口已定型, 迁移成本=实现类+搬迁脚本)。
 
 ## 12. 风险与开放问题
 
