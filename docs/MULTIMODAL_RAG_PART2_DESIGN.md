@@ -34,8 +34,10 @@
 | 角色 | 默认 | env | 协议 | 可换范围 |
 |---|---|---|---|---|
 | **解析 VLM** | vLLM 服务上的 dots.ocr/dots.mocr | `DOT_OCR_BASE_URL` + `DOT_OCR_MODEL` | OpenAI 兼容 `/v1/chat/completions`, image_url block, 输出=layout JSON 协议(§1) | 任何遵循该 prompt 协议的 vLLM 模型(dots 系/微调版); 换协议模型需改 `dots_ocr_client.py` |
-| **多模态 embedding** | DashScope `multimodal-embedding-one-peace-v1` | `MULTIMODAL_EMBEDDING_MODEL` / `_DIM`(0=首响应自动探测) | DashScope SDK: text 块 `{text}`, image 块 `{image: base64, text}` | 参考项目实测 `tongyi-embedding-vision-flash-*` 亦可用; 换模型必须核维度 |
-| **图片描述 VLM** | `qwen-vl-plus` | `MULTIMODAL_VLM_MODEL` | 项目现有 OpenAI 兼容客户端 + image_url block | 任意 OpenAI 兼容 VL 模型 |
+| **多模态 embedding** | 火山方舟 `doubao-embedding-vision`(订阅 plan 端点, 实测解析为 251215 版, dim=2048) | `MULTIMODAL_EMBEDDING_PROVIDER=ark`(默认)\|`dashscope` + `MULTIMODAL_EMBEDDING_MODEL` / `_DIM`(0=自动探测) | ark: httpx 直调 `{base}/embeddings/multimodal`, input=content-block 数组 — text 块 `[{type:text}]`, image 块 `[{type:image_url, url:"data:image/jpeg;base64,..."}, {type:text}]`; **响应 `data` 为单对象**(非 OpenAI 数组, 实现须兼容) | dashscope 备选: `multimodal-embedding-one-peace-v1` / `tongyi-embedding-vision-flash-*`(SDK `{image, text}`); 换模型必须核维度 |
+| **图片描述 VLM** | `qwen-vl-plus`(key 现成) — 可一行 env 切方舟或 GLM | `MULTIMODAL_VLM_MODEL` + `MULTIMODAL_VLM_BASE_URL` / `_API_KEY`(可选, 默认走 QWEN) | OpenAI 兼容 chat + image_url base64 block | 方舟 `doubao-seed-1-6-vision-250815`(需**正式 v3 按量端点**+对应 key, plan 端点不含 VL, 实测 UnsupportedModel); GLM `glm-4.5v`(bigmodel v4 端点) |
+
+**实测记录(2026-09-15, 订阅 plan 端点)**: ①`doubao-embedding-vision` 文本/图片-base64/图文联合三种输入均 200, dim=2048; ②base64 data URI 被服务端解码(1×1 图报"最小 14px", 换 320×240 通过 — 一期本地图片无需公网 URL, 二期 MinIO 亦不必开公网); ③响应 `data` 为单对象含 `embedding`, 与 OpenAI 数组结构不同; ④`doubao-seed-1-6-vision-250815` 与 `glm-4.5v` 在 plan 端点 404 UnsupportedModel — VL 描述模型若走方舟需正式按量端点+独立 key, 或走 GLM bigmodel。
 
 推理参数: 解析 VLM `temperature=0.1, max_completion_tokens=16384`(env 可覆盖); embedding 限流 `MULTIMODAL_EMBED_RPM=120` + 429 指数退避(5 次, base 2.0s, 复刻参考)。
 
@@ -122,16 +124,21 @@ DOT_OCR_TEMPERATURE=0.1
 DOT_OCR_MAX_COMPLETION_TOKENS=16384
 DOT_OCR_FALLBACK_FITZ=true
 
-# --- 多模态 embedding ---
-MULTIMODAL_EMBEDDING_MODEL=multimodal-embedding-one-peace-v1
-MULTIMODAL_EMBEDDING_DIM=0   # 0=首响应自动探测并建 collection; 显式值=强校验
+# --- 多模态 embedding (provider 可切, 默认方舟) ---
+MULTIMODAL_EMBEDDING_PROVIDER=ark       # ark(默认, doubao-embedding-vision) | dashscope(备选)
+MULTIMODAL_EMBEDDING_MODEL=doubao-embedding-vision
+MULTIMODAL_EMBEDDING_BASE_URL=          # 空=复用 OPENAI_BASE_URL(订阅 plan 端点); 可指正式 v3 端点
+MULTIMODAL_EMBEDDING_API_KEY=           # 空=复用 OPENAI_API_KEY
+MULTIMODAL_EMBEDDING_DIM=0              # 0=首响应自动探测并建 collection; 显式值=强校验(ark 默认 2048)
 MULTIMODAL_EMBED_RPM=120
 MULTIMODAL_EMBED_MAX_RETRIES=5
 MULTIMODAL_EMBED_BACKOFF_BASE=2.0
-DASHSCOPE_API_KEY=           # 密钥仅经 env, 严禁硬编码(参考仓库的反面教材)
+DASHSCOPE_API_KEY=                      # 仅 provider=dashscope 时需要; 密钥仅经 env, 严禁硬编码
 
-# --- 图片描述 VLM ---
-MULTIMODAL_VLM_MODEL=qwen-vl-plus
+# --- 图片描述 VLM (默认 qwen; 可一行切方舟正式端点或 GLM) ---
+MULTIMODAL_VLM_MODEL=qwen-vl-plus       # 换方舟: doubao-seed-1-6-vision-250815; 换 GLM: glm-4.5v
+MULTIMODAL_VLM_BASE_URL=                # 空=默认随模型族(qwen→DashScope 兼容端点); 方舟=https://ark.cn-beijing.volces.com/api/v3; GLM=https://open.bigmodel.cn/api/paas/v4
+MULTIMODAL_VLM_API_KEY=                 # 空=QWEN_API_KEY; 方舟/GLM 需对应独立 key(plan 端点不含 VL, 实测 §2)
 
 # --- 存储 (图片资产两期策略见 §6) ---
 MULTIMODAL_ASSET_STORE=local             # local(一期默认) | minio(二期)

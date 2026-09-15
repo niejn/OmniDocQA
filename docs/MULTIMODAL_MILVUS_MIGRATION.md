@@ -632,3 +632,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.20 | 第二部分 v2 实施设计定稿(`MULTIMODAL_RAG_PART2_DESIGN.md`): dots.ocr 源码级借鉴映射、三类多模态模型支持矩阵、密集向量后端 env 切换(milvus_multimodal)与零改动边界 |
 | v1.21 | 二期设计增量: 图片资产两期存储策略 — 一期 local(MULTIMODAL_PAGES_DIR) / 二期 MinIO, 接口一期定型(`multimodal_asset_store.py`), asset key 两期同构保证 Milvus 数据与 API 契约零迁移 |
 | v1.22 | 二期设计补全: 实现蓝图(9 文件级职责+签名, 关键实现决策: bbox 裁剪插图/跨页标题继承/filtered 页/协议兼容)、错误处理矩阵、CLI 契约(退出码/幂等/上限防护)、测试计划、性能预算与可观测性 |
+| v1.23 | 模型栈定稿(实测驱动): 多模态 embedding 默认火山方舟 doubao-embedding-vision(plan 端点实测 dim=2048/base64 data URI/图文联合/响应 data 单对象), provider=ark\|dashscope 可切, 新增依赖归零; 图片描述 VLM 可一行切方舟正式端点(doubao-seed-1-6-vision-250815, plan 端点实测 404)或 GLM glm-4.5v; doubao-seedream-5.0-pro 属图像生成模型不适用图片描述, 评估排除 |
