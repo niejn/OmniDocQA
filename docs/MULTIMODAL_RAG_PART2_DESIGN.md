@@ -198,7 +198,7 @@ Library(全库) ─ Book(逻辑书, book_id) ─ Chapter(章 = 一个 PDF = docu
 
 | 存储 | 承载 |
 |---|---|
-| Milvus `book_id`/`chapter_label` 标量字段(索引) | filter 下推: `book_id in [...]`、`book_id in [...] and chapter_label in [...]`、`kind in [...]` |
+| Milvus `book_id`/`chapter_label` 标量字段(索引) | **filter 表达式统一走 document_id 归一并集**(2026-09-15 修正): 前端 books+chapters 各自展开为 document_id 集合后**去重并集** → `document_id in [...] and kind in [...]` — 消除书章交集陷阱(选书A+选书B的章 = A全部 ∪ B该章, 用户直觉语义); `book_id`/`chapter_label` 字段保留为**冗余展示字段**(evidence 卡直接从命中点读书名/章名, 零回查 PG) |
 | PG `rag_documents.metadata` 追加 `{book_id, chapter_index, chapter_label}` | 事实源; `/library/filters` 聚合数据源。**层级关系用 metadata 不建表的理由**(2026-09-15 决策): 书当前无独立属性(仅分组标签, 全部需求在读路径)、零 schema 变更、删除无孤儿行; 引用完整性由 CLI 写入时 trim 规范化 book_id 保证。**升级 `library_books` 表的触发条件**(任一出现即建表, metadata 保留冗余做 Milvus 下推): ①书需独立属性(作者/封面/权限) ②重命名成高频操作 ③书过百本且 /filters 聚合变慢 ④第五部分动态 collection 落地。对照: 用户集合(§6.2)跨文档+chunk 级+CRUD 生命周期+唯一名约束, 故必须建表 — 两者的分界 = 分组标签 vs 一等实体 |
 | 检索执行路径 | **filter 下推 Milvus 标量字段**(书/章/kind/筛选集合 → `expr` 与向量搜索一次完成, 归属关系写入时已物化到每个 chunk 点上, 检索零 join); 枚举集合 = PK 列表下推(`id in [...]`, ≤500); **否决"PG 倒查 chunk id 集合再查"** — 表达式爆炸(一书几千 id)+热路径多一跳 PG+把引擎原生标量过滤搬到应用层 |
 
@@ -276,7 +276,7 @@ MULTIMODAL_PAGES_DIR/
 v1 §4.3 契约沿用(ask/collections/page-image 三端点、请求响应模型、错误契约 422/404/502、路径穿越防护), 修正与扩展:
 
 - **multimodal 检索改走 `MilvusMultimodalDenseBackend.search()`**(§4.4 显式实例化), 不再是"library_service 内联调用 embedding+Milvus" — 后端化统一了删除工具/factory/维度校验的复用面。
-- **ask 请求扩展**(2026-09-15 需求, 仅 multimodal 路; text 路忽略并告警): `filters: {books?: string[], chapters?: string[](=document_id), kinds?: ("text"|"image")[]}` 与 `set_id?: string` **二选一**(同传 422); 均省略 = 全库(现状)。filter → Milvus 标量表达式下推(`book_id in [...] and chapter_label in [...] and kind in [...]`); set_id → §6.2 展开。evidence 不变。
+- **ask 请求扩展**(2026-09-15 需求, 仅 multimodal 路; text 路忽略并告警): `filters: {books?: string[], chapters?: string[](=document_id), kinds?: ("text"|"image")[]}` 与 `set_id?: string` **二选一**(同传 422); 均省略 = 全库(现状)。**语义(同日修正)**: books/chapters 独立维度 — books 展开为其全部章节 document_id, 与 chapters 直接给定的 document_id **并集去重**, 再 `and kind in [...]` 下推(单表达式 `document_id in [...] and kind in [...]`; 并集为空则无 book/chapter 条件) — 无书章交集陷阱。set_id → §6.2 展开。evidence 不变(MmHit 增 book_id/chapter_label 直显)。
 - **新端点 `GET /agent/api/library/filters`**: 页面初始化拉取可用 filter 标签面 — 从 `rag_documents.metadata` 聚合: `{books: [{book_id, title, chapter_count, chunk_count?, chapters: [{document_id, chapter_index, chapter_label, filename, pages, chunks}]}], kinds: ["text","image"]}`(chunk_count 惰性: 书量大时按需)。前端据此渲染级联筛选器。
 - **新端点 集合 CRUD**(§6.2): `POST /library/sets {name, filter?|chunk_ids?}`(二选一, chunk_ids ≤500) / `GET /library/sets`(含 chunk 失效计数) / `DELETE /library/sets/{set_id}`。重名 422; 集合检索直接走 ask 的 set_id。
 - 其余(text 路 RRF、rerank 复用、CONTEXT_CHAR_BUDGET、generate_answer 语义、证据 `[文件名:p页]`)不变。
@@ -493,7 +493,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | OPENAI_API_KEY(ark) | 生成/多模态向量/VLM 描述 | ark plan | 后端 only |
 | ZHIPU_API_KEY + ZHIPU_BASE_URL | GLM 备选通道(coding plan) | bigmodel coding | 后端 only |
 | OPENROUTER_API_KEY | 文本 embedding(现有) | openrouter | 后端 only |
-| BOCHA_API_KEY | rerank 回退(现有) | bocha | 后端 only |
+| BOCHA_API_KEY | leads web/ai 搜索(现有) | bocha | 后端 only |
 | DASHSCOPE_API_KEY | 多模态 embedding 备选(预留, 空) | dashscope | 后端 only |
 | DOT_OCR_API_KEY | vLLM 解析(默认占位 0) | 自起 vLLM | 内网 |
 | LANGFUSE_* | 观测(现有) | langfuse | 后端 only |

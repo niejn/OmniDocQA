@@ -81,7 +81,7 @@ flowchart LR
 - 稀疏检索: Postgres tsvector(`node_repository.sparse_search`)与 OpenSearch 全部废弃 → Milvus **BM25 Function**(`SPARSE_FLOAT_VECTOR` + `SPARSE_INVERTED_INDEX`)。
 - **Postgres 零 DDL**: `rag_nodes` 保留全部列(含 `text, title, metadata, search_vector, has_vector`)。`search_vector` 列在切换后不再被查询路径使用, 但列保留(GENERATED STORED, PG 写入自动维护, 无需处理)。
 - Analyzer: 默认 `english`(语料为 EDGAR 英文), 可配置 `jieba`(中文课件场景)。现网 PG 用 `simple`、OpenSearch 有 finance 调优 profile — 迁移验收用评测集对比, 不达标再调 analyzer。
-- 问答管线逻辑(finance 路由、RRF 融合、Bocha rerank、兄弟扩展、上下文预算)行为不变。
+- 问答管线逻辑(finance 路由、RRF 融合、本地 rerank、兄弟扩展、上下文预算)行为不变。
 
 ### 3.2 实现方式: factory + 协议扩展
 
@@ -219,7 +219,7 @@ qdrant/opensearch 本期保持默认启动(切换前仍是现网后端); **1A �
 `tools/rerank.py` 组合式选型(对管线透明, 调用点 `llamaindex_retrieval`/`server` 仅换 import):
 - **`RERANKER_BACKEND=local`(默认)**: `tools/local_reranker.py` — sentence-transformers CrossEncoder, 复用 `tools/qwen_reranker.py`(原 qwen_reranker_demo, 已更名转正)的加载器(BNB 4/8bit 可选, CUDA)与 Sigmoid 打分; 懒加载+失败缓存+启动预热(server startup 后台 create_task, 锁防重复加载); 模型 = **本地 4B**(`LOCAL_RERANKER_MODEL` 指向 `C:/Users/julien/.cache/huggingface/hub/Qwen3-Reranker-4B`, 7.6GB 完整缓存, RTX 5080 bf16); 备选 `Qwen/Qwen3-Reranker-0.6B`(HF 自动下载)。
 - 验证: 9 项单测 + **0.6B/4B 双真模型冒烟 PASS**(4B: 加载 13.4s 一次性, 纯推理 56ms, liquidity 段 0.995 居首/cover 淘汰)。
-- `RERANKER_BACKEND=bocha|none` 可显式回退/关闭。
+- `RERANKER_BACKEND=none` 可显式关闭（bocha 远程后端已于 2026-09-16 移除）。
 - 注意: API 服务首个 rerank 请求会触发模型加载(~20s), 可选启动预热; Windows 下 HF 下载用 `HF_ENDPOINT=https://hf-mirror.com`。
 
 全部 47 项单测通过。
@@ -317,7 +317,7 @@ GET /collections 返回:
     available}]   # multimodal 未建/为空 → available=false, 前端置灰
 ```
 
-内部流程: text 路 = 现有 vectorizer 文本向量 → Milvus dense + BM25 双路(均无 document 过滤)→ 应用层 RRF → Bocha rerank(若配置, 复用单例)→ CONTEXT_CHAR_BUDGET 拼接; multimodal 路 = DashScope 多模态 embedding(纯文本)→ rag_multimodal dense top-k, image 块以 VLM 描述作上下文; generate_answer=true 时 DEFAULT_MODEL 生成, 证据标 [文件名:p页]。
+内部流程: text 路 = 现有 vectorizer 文本向量 → Milvus dense + BM25 双路(均无 document 过滤)→ 应用层 RRF → 本地 CrossEncoder rerank(复用单例)→ CONTEXT_CHAR_BUDGET 拼接; multimodal 路 = DashScope 多模态 embedding(纯文本)→ rag_multimodal dense top-k, image 块以 VLM 描述作上下文; generate_answer=true 时 DEFAULT_MODEL 生成, 证据标 [文件名:p页]。
 
 错误契约: 422 参数校验; collection 未初始化 → 404; embedding/Milvus 上游故障 → 502; 无命中 → 200 + evidence=[] + answer=null。
 
@@ -373,8 +373,9 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 
 | 规则 | 行为 |
 |---|---|
-| 级联 | 书 chips 多选; 选中 ≥1 本书才展开其章 chips(章归属于书, 多书时各书章并列分组显示); 取消选中书 → 其章选中态清除 |
+| 全量常驻(2026-09-15 修正, 否决级联) | **书与章始终全部可见可选, 无"先选书才展章"门槛** — 按章筛是独立诉求(例: 只要某几章, 不限书); 形态 = 按书分组的折叠面板(默认全展开, 章多时区内滚动+搜索框过滤标签名); 选中书**不约束**其章 — 二者独立勾选 |
 | kind | 筛选面板 kind(全部/文本/图片)是**检索前下推**(改检索本身); 与结果区过滤 chips(§5.3, 显示层)并存且视觉区分 — 面板放检索区上方, 结果 chips 在证据区标题行 |
+| 归一语义 | 书/章选择在前端归一为 **document_id 并集**(选书=该书全部章; 选章=单个 document_id; 重复去重)随请求下发的只有 document_id 集合 — 后端单表达式 `document_id in [...] and kind in [...]`, 无书章交集陷阱(选书A + 选书B的第c章 = A全部 ∪ B.c章) |
 | 触发时机 | filter 变更**不自动重查**(避免连点打爆), 下次[提问]生效; 若已有结果, 面板显示"筛选已变更, 重新提问生效"提示条 |
 | 集合 | "保存为集合"按钮(当前 filter 组合命名保存) → "自定义集合"下拉(含 chunk 计数/失效数); 选中集合 = set_id 检索(面板其余 chips 置灰禁用, 二选一语义) |
 | 持久化 | filters/选中集合/collection 记 localStorage, 刷新恢复; URL 参数化(可分享筛选链接)为 P2 |
@@ -400,8 +401,8 @@ lib/api.ts                       # +libraryAsk(filters/set_id) +fetchLibraryFilt
 ├────────────────────────────────────────────────┤
 │ 检索库 [多模态库 ▼]  (生成答案|仅检索)   topK[8] │ ← LibraryControls
 │ 筛选 [全部|文本|图片]  自定义集合[无 ▼] [存为集合]│ ← FilterBar(激活时 Badge"筛选 2" [清除])
-│ 书: [Flink指南×] [Kafka精讲 ] [Netty实战 ]       │ ← 书 chips 多选
-│   章: [第3章 DataStream×] [第4章 算子 ]          │ ← 选中书的章 chips
+│ ▾ Flink指南        [全书✓] 第1章☐ 第3章☑ 第4章☐ │ ← 书=全书快捷勾选; 章独立勾选
+│ ▾ Kafka精讲        [全书✓] 第2章☐ 第5章☐        │ ← 全部书常驻可选(折叠+搜索)
 │ ┌────────────────────────────────────────────┐ │
 │ │ 有界流和无界流的定义                   [提问] │ │
 │ └────────────────────────────────────────────┘ │
@@ -484,13 +485,13 @@ lib/api.ts                       # +libraryAsk(filters/set_id) +fetchLibraryFilt
 
 | 对比维度 | 变量 | 固定量 | 评测指标 | 预期产出 |
 |---|---|---|---|---|
-| **Reranker 选型** | `RERANKER_BACKEND=local/bocha/none` + `LOCAL_RERANKER_MODEL=4B/0.6B` | 同一 embedding, 同一融合池 | `ContextPrecision`(检索精度)+ `AnswerRelevancy` | "4B 比 bocha 好 X%, 比 no-rerank 好 Y%" |
+| **Reranker 选型** | `RERANKER_BACKEND=local/none` + `LOCAL_RERANKER_MODEL=4B/0.6B` | 同一 embedding, 同一融合池 | `ContextPrecision`(检索精度)+ `AnswerRelevancy` | "4B 比 0.6B 好 X%, 比 no-rerank 好 Y%" |
 | **Embedding 选型** | `EMBEDDING_PROVIDER=qwen/zhipu/openrouter` | 同一 reranker, 同一 chunking | `ContextRecall`(需 reference)+ `ContextPrecision` | "qwen text-embedding-v3 比 zhipu 召回高 X%" |
 | **检索策略** | dense-only vs sparse-only vs hybrid | 同一 embedding + reranker | `ContextRecall` + `ContextPrecision` + 延迟 | "hybrid 比单独 dense 好 X%" |
 | **Chunking 策略** | `EMBEDDING_SAFE_CHARS` / 语义分块阈值 | 同一 embedding + reranker | `ContextRecall` + `AnswerCorrectness` | "3000 chars 比 2000 召回高 X%" |
 | **Analyzer(BM25)** | `MILVUS_TEXT_ANALYZER=english/jieba` | 同一 dense 路径 | `ContextPrecision`(sparse 路) | "english vs jieba 对英文财报的召回差异" |
 
-执行基础设施: `scripts/run_ab_test.py --dimension reranker --variants local:4B,local:0.6B,bocha,none --testset tools/data/eval_set_v2.json` → `experiments/ab_reranker_<date>.csv`(per-variant per-metric per-question)。
+执行基础设施: `scripts/run_ab_test.py --dimension reranker --variants local:4B,local:0.6B,none --testset tools/data/eval_set_v2.json` → `experiments/ab_reranker_<date>.csv`(per-variant per-metric per-question)。
 
 ### 6.7 R7 持续评测与回归检测(评测驱动开发)
 
@@ -631,6 +632,8 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | 2026-09-10 | Step 1B 先于 M4 执行(用户决策); MilvusSparseBackend 的 replace 为 no-op, factory 强制 dense=milvus+sparse=milvus 混配 fail-fast; SparseQueryPlan 不生效仅记日志(§3.9 预案) | 用户要求先切稀疏; 行(text+BM25)只能由 dense 路径写入(schema dense 非空), 混配必空结果故显式报错优于静默; 质量差异留 M4 门禁统一验收 |
 | 2026-09-11 | BM25 text 加权(写入侧拼接)先于 M4 启用(用户决策, 推翻"门禁触发才做"的默认顺序): title×2+hints×3 拼入 text, 前缀长度记 metadata 读取剥离, `milvus_rebuild_text.py` upsert 重建存量 | 用户判断章节导向查询收益值得提前做; 风险(词法噪声同步放大、reranker 输入污染)以后者剥离方案规避, 净效果由 M4 统一验收 |
 
+| 2026-09-16 | 移除 Bocha 远程 reranker: `bocha_reranker.py` 删除, `rerank.py` 仅 local/none, `BOCHA_TOP_N`→`RERANKER_TOP_N`, `/health` key `bocha_rerank`→`reranker`; leads 的 Bocha web-search 保留 | 用户决策: 本地 4B 已稳定, 远程回退无调用价值 |
+
 ## 10. 版本历史
 
 | 版本 | 变更 |
@@ -667,3 +670,5 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.27 | 系统设计补全(PART2_DESIGN §19-24): 服务拓扑/collection 全景/数据流、删除级联矩阵与并发防护(先 Milvus 后 PG 后资产, 最终一致)、回滚预案(零改动边界=文本链天然免回滚)、可观测(log_rag/langfuse/m4 门禁)、密钥矩阵与上传安全、需求追踪矩阵 |
 | v1.28 | 书籍层级与集合需求(用户): ①Book→Chapter(=PDF)→Chunk 层级, 同 `--book` 多章节 PDF 自动聚合, Milvus 加 book_id/chapter_label 标量 filter 下推, `/library/filters` 聚合端点; ②前端启动拉 filter 标签 + 动态圈选保存自定义集合(PG 新表 `library_sets`, filter 型/枚举型) + chunk 勾选入集合; ask 扩 filters/set_id 参数(PART2_DESIGN §6.1/6.2/§8) |
 | v1.29 | 前端标签筛选器交互定稿(§5.2.0): 挂载拉 /filters 标签面 → 书/章级联 chips 多选(选中书才展开章) → kind 检索前下推(与结果区显示层过滤区分) → 点提问才生效(不自动重查, 变更提示条) → 集合下拉/存为集合/勾选入集合; 线框与组件树更新(FilterBar/SaveSetDialog/勾选浮条); localStorage 持久化+失效清洗; 组件树/线框同步 |
+| v1.30 | Bocha 远程 reranker 移除(见 2026-09-16 决策): rerank 仅本地 CrossEncoder, CompositeReranker 级联简化为工厂直选 |
+| v1.30 | 修正 filter 语义与交互: 否决"选书才展章"级联(按章筛是独立诉求) → 书/章全量常驻可选(折叠面板+搜索); books/chapters 归一为 document_id **并集**下推(单表达式 `document_id in [...] and kind in [...]`), 消除书章交集陷阱(选书A+选书B的章=并集而非空集); book_id/chapter_label 降级为 evidence 冗余展示字段(零回查 PG) |
