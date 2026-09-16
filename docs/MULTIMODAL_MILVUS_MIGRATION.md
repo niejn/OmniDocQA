@@ -354,37 +354,63 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 ### 5.2 查询交互
 
 - collection 下拉(native `<select>`, 数据来自 collections 端点, 沿用 `DocumentScope.tsx` 的 select 模式); 无 DocumentScope/文档选择。
-- **书籍/章节级联筛选器**(2026-09-15 需求, 数据来自 `GET /library/filters`): 页面初始化渲染书 chips(多选) → 选中书展开其章 chips(多选) → 可再叠加 `[文本|图片]` kind 筛选; 全不选=全库。选中的 filter 组合可"保存为集合"(命名) → 集合出现在筛选器旁的"自定义集合"下拉, 选中即以其为检索范围(set_id)。
-- **chunk 勾选入集合**: 证据卡右上角复选框(仅检索结果模式有意义), 勾选后底部浮条"加入集合"(选已有/新建) — 枚举型集合(≤500 chunk)。
 - 问题输入 + Enter 提交、top_k(沿用 `page.tsx` 交互与 clamp 逻辑)。
 - 模式开关: "生成答案 / 仅检索"分段按钮(沿用 `DocumentScopeMode` 切换样式)。
+
+### 5.2.0 标签筛选器(filter 生效与查询数据流, 2026-09-15 定稿)
+
+**数据流**:
+
+```
+① 页面挂载 ──GET /library/filters──▶ 标签面 {books[{id,title,chapters[]}], kinds[]}
+② 用户点选 chips ──▶ 前端状态 filters={books?,chapters?,kinds?}(或选中集合 set_id)
+③ 点[提问]/Enter ──POST /library/ask {question, collection, top_k, filters|set_id}──▶
+④ 后端 filters → Milvus 标量表达式下推(检索热路径不碰 PG) ──▶ evidence 仅含 filter 范围内 chunk
+⑤ 激活 filter 数量 Badge("筛选 2") + [清除全部]; 空结果时提示"当前筛选范围内无命中, 试试放宽"
+```
+
+**交互规则**:
+
+| 规则 | 行为 |
+|---|---|
+| 级联 | 书 chips 多选; 选中 ≥1 本书才展开其章 chips(章归属于书, 多书时各书章并列分组显示); 取消选中书 → 其章选中态清除 |
+| kind | 筛选面板 kind(全部/文本/图片)是**检索前下推**(改检索本身); 与结果区过滤 chips(§5.3, 显示层)并存且视觉区分 — 面板放检索区上方, 结果 chips 在证据区标题行 |
+| 触发时机 | filter 变更**不自动重查**(避免连点打爆), 下次[提问]生效; 若已有结果, 面板显示"筛选已变更, 重新提问生效"提示条 |
+| 集合 | "保存为集合"按钮(当前 filter 组合命名保存) → "自定义集合"下拉(含 chunk 计数/失效数); 选中集合 = set_id 检索(面板其余 chips 置灰禁用, 二选一语义) |
+| 持久化 | filters/选中集合/collection 记 localStorage, 刷新恢复; URL 参数化(可分享筛选链接)为 P2 |
+| 边界 | 标签面为空(无多模态文档)→ 面板显示"暂无书籍标签, 先入库 PDF"; 已选书/章在最新 /filters 中消失(被删)→ 挂载时清洗选中态并 toast 提醒; collection=text 时面板整体置灰(filters 仅 multimodal 路, text 路忽略) |
 
 ### 5.2.1 组件树与线框
 
 ```
 app/library/page.tsx             # "use client", 页面骨架 + 状态机 idle→loading→result|error
 components/LibraryControls.tsx   # collection 下拉 + 模式开关 + top_k
-components/EvidenceCard.tsx      # text/image 两种变体(image 变体含 <img> 懒加载缩略图)
+components/FilterBar.tsx         # 标签筛选器: 书/章级联 chips + kind 分段 + 集合下拉 + 保存为集合 + 清除全部
+components/EvidenceCard.tsx      # text/image 两种变体(image 变体含 <img> 懒加载缩略图 + 勾选框入集合)
+components/SaveSetDialog.tsx     # 命名保存集合(新名/选已有枚举集合)
 components/Header.tsx            # 共享导航(原首页唯一改动点)
-lib/api.ts                       # +libraryAsk() +fetchLibraryCollections()
+lib/api.ts                       # +libraryAsk(filters/set_id) +fetchLibraryFilters() +sets CRUD
 ```
 
-行为: collection 下拉数据来自 /collections, `available=false` 选项置灰标"(未初始化)"; 默认选第一个可用库并记 localStorage; Enter 提交、提交中禁用; 结果整体替换, v1 无历史记录/多轮会话。
+行为: collection 下拉数据来自 /collections, `available=false` 选项置灰标"(未初始化)"; 默认选第一个可用库并记 localStorage; Enter 提交、提交中禁用; 结果整体替换, v1 无历史记录/多轮会话; filters 状态同记 localStorage(挂载时对照最新标签面清洗失效项)。
 
 ```
 ┌────────────────────────────────────────────────┐
 │ RAGAS·Finance        [文档问答] [全库查询 ●]     │ ← Header
 ├────────────────────────────────────────────────┤
 │ 检索库 [多模态库 ▼]  (生成答案|仅检索)   topK[8] │ ← LibraryControls
+│ 筛选 [全部|文本|图片]  自定义集合[无 ▼] [存为集合]│ ← FilterBar(激活时 Badge"筛选 2" [清除])
+│ 书: [Flink指南×] [Kafka精讲 ] [Netty实战 ]       │ ← 书 chips 多选
+│   章: [第3章 DataStream×] [第4章 算子 ]          │ ← 选中书的章 chips
 │ ┌────────────────────────────────────────────┐ │
 │ │ 有界流和无界流的定义                   [提问] │ │
 │ └────────────────────────────────────────────┘ │
 │ ┌─ 答案 ──────────────────────────────────────┐ │
 │ │ 无界流是持续生成的数据流… [Flink概念:p3]      │ │ ← 仅 generate_answer=true
-│ ├─ 证据 (N) ──────────────────────────────────┤ │
-│ │ [text] 第一章Flink概述►运行模型   score .83  │ │
+│ ├─ 证据 (N) [全部|文本|图片] ← 显示层过滤 ──────┤ │
+│ │ [text] 第一章Flink概述►运行模型   score .83 ☑│ │ ← ☑ 勾选入集合
 │ │ [image][缩略图] 图1-2 数据流  p3   score .81 │ │ ← /api/library/page-image
-│ └────────────────────────────────────────────┘ │
+│ └────────────────────────────────────────────────│ │ 勾选后底部浮条: [加入集合 ▼]
 └────────────────────────────────────────────────┘
 ```
 
@@ -640,3 +666,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.26 | GLM Coding Plan 端点记录(anthropic/coding-chat/response/标准四端点总表 §4.5); 实测判定 ZHIPU_API_KEY 为 Coding Plan 订阅(glm-5.3-flash 视觉在 coding 端点订阅内可用, 标准端点按量 429) → glm-5.3-flash 双订阅通道; `ZHIPU_BASE_URL` 入 config/.env/env.example |
 | v1.27 | 系统设计补全(PART2_DESIGN §19-24): 服务拓扑/collection 全景/数据流、删除级联矩阵与并发防护(先 Milvus 后 PG 后资产, 最终一致)、回滚预案(零改动边界=文本链天然免回滚)、可观测(log_rag/langfuse/m4 门禁)、密钥矩阵与上传安全、需求追踪矩阵 |
 | v1.28 | 书籍层级与集合需求(用户): ①Book→Chapter(=PDF)→Chunk 层级, 同 `--book` 多章节 PDF 自动聚合, Milvus 加 book_id/chapter_label 标量 filter 下推, `/library/filters` 聚合端点; ②前端启动拉 filter 标签 + 动态圈选保存自定义集合(PG 新表 `library_sets`, filter 型/枚举型) + chunk 勾选入集合; ask 扩 filters/set_id 参数(PART2_DESIGN §6.1/6.2/§8) |
+| v1.29 | 前端标签筛选器交互定稿(§5.2.0): 挂载拉 /filters 标签面 → 书/章级联 chips 多选(选中书才展开章) → kind 检索前下推(与结果区显示层过滤区分) → 点提问才生效(不自动重查, 变更提示条) → 集合下拉/存为集合/勾选入集合; 线框与组件树更新(FilterBar/SaveSetDialog/勾选浮条); localStorage 持久化+失效清洗; 组件树/线框同步 |
