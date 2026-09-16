@@ -35,9 +35,9 @@
 |---|---|---|---|---|
 | **解析 VLM** | vLLM 服务上的 dots.ocr/dots.mocr | `DOT_OCR_BASE_URL` + `DOT_OCR_MODEL` | OpenAI 兼容 `/v1/chat/completions`, image_url block, 输出=layout JSON 协议(§1) | 任何遵循该 prompt 协议的 vLLM 模型(dots 系/微调版); 换协议模型需改 `dots_ocr_client.py` |
 | **多模态 embedding** | 火山方舟 `doubao-embedding-vision`(订阅 plan 端点, 实测解析为 251215 版, dim=2048) | `MULTIMODAL_EMBEDDING_PROVIDER=ark`(默认)\|`dashscope` + `MULTIMODAL_EMBEDDING_MODEL` / `_DIM`(0=自动探测) | ark: httpx 直调 `{base}/embeddings/multimodal`, input=content-block 数组 — text 块 `[{type:text}]`, image 块 `[{type:image_url, url:"data:image/jpeg;base64,..."}, {type:text}]`; **响应 `data` 为单对象**(非 OpenAI 数组, 实现须兼容) | dashscope 备选: `multimodal-embedding-one-peace-v1` / `tongyi-embedding-vision-flash-*`(SDK `{image, text}`); 换模型必须核维度 |
-| **图片描述 VLM** | `qwen-vl-plus`(key 现成) — 可一行 env 切方舟或 GLM | `MULTIMODAL_VLM_MODEL` + `MULTIMODAL_VLM_BASE_URL` / `_API_KEY`(可选, 默认走 QWEN) | OpenAI 兼容 chat + image_url base64 block | 方舟 `doubao-seed-1-6-vision-250815`(需**正式 v3 按量端点**+对应 key, plan 端点不含 VL, 实测 UnsupportedModel); GLM `glm-4.5v`(bigmodel v4 端点) |
+| **图片描述 VLM** | **`doubao-seed-2-0-lite-260428`(plan 端点实测通过, 零新增配置)** — 高并发批量(RPM 30000)匹配离线入库场景 | `MULTIMODAL_VLM_MODEL` + `MULTIMODAL_VLM_BASE_URL` / `_API_KEY`(可选, 默认复用 OPENAI_* 即 plan 端点) | OpenAI 兼容 chat + image_url base64 block; **须 `extra_body={thinking:{type:disabled}}`**(该系模型 thinking 默认开, 实测带 reasoning_content, 批量描述禁用省时省 token — 复用 RAGAS judge 修复经验) | 同端点备选 `doubao-seed-evolving`(实测通过, 质量优先); GLM `glm-4v-flash`(免费)/`glm-4v-plus`(`ZHIPU_API_KEY` 现成, bigmodel v4 端点); `qwen-vl-plus` 末选(`QWEN_API_KEY` 实际为空) |
 
-**实测记录(2026-09-15, 订阅 plan 端点)**: ①`doubao-embedding-vision` 文本/图片-base64/图文联合三种输入均 200, dim=2048; ②base64 data URI 被服务端解码(1×1 图报"最小 14px", 换 320×240 通过 — 一期本地图片无需公网 URL, 二期 MinIO 亦不必开公网); ③响应 `data` 为单对象含 `embedding`, 与 OpenAI 数组结构不同; ④`doubao-seed-1-6-vision-250815` 与 `glm-4.5v` 在 plan 端点 404 UnsupportedModel — VL 描述模型若走方舟需正式按量端点+独立 key, 或走 GLM bigmodel。
+**实测记录(2026-09-15, 订阅 plan 端点)**: ①`doubao-embedding-vision` 文本/图片-base64/图文联合三种输入均 200, dim=2048; ②base64 data URI 被服务端解码(1×1 图报"最小 14px", 换 320×240 通过 — 一期本地图片无需公网 URL, 二期 MinIO 亦不必开公网); ③响应 `data` 为单对象含 `embedding`, 与 OpenAI 数组结构不同; ④`doubao-seed-1-6-vision-250815` 与 `glm-4.5v` 在 plan 端点 404 UnsupportedModel — VL 描述模型若走方舟需正式按量端点+独立 key, 或走 GLM bigmodel。⑤**`doubao-seedream-5.0-pro` 不适用图片描述** — 属图像生成模型(文生图/图生图), 与视觉理解(图→文)是方舟两条独立产品线; 评估排除(2026-09-15)。⑥`doubao-seed-2-0-lite-260428` 与 `doubao-seed-evolving` 在 plan 端点 chat+image_url 直读成功(描述准确, finish=stop), 但 thinking 默认开(reasoning_content 非空) — 实现须禁用; `doubao-seed-2-1-pro-260628` 404。⑦key 盘点: `QWEN_API_KEY` 为空(原默认 qwen-vl-plus 的"key 现成"假设不成立), `ZHIPU_API_KEY` 现成(GLM 备选可用)。**架构注**: 多模态 embedding 管"找得到"(图→向量, 检索用), VLM 描述管"讲得出"(图→文, 生成 LLM 是纯文本模型看不了图 + BM25 text 字段 + 证据卡 preview) — 二者不可互替。
 
 推理参数: 解析 VLM `temperature=0.1, max_completion_tokens=16384`(env 可覆盖); embedding 限流 `MULTIMODAL_EMBED_RPM=120` + 429 指数退避(5 次, base 2.0s, 复刻参考)。
 
@@ -135,10 +135,10 @@ MULTIMODAL_EMBED_MAX_RETRIES=5
 MULTIMODAL_EMBED_BACKOFF_BASE=2.0
 DASHSCOPE_API_KEY=                      # 仅 provider=dashscope 时需要; 密钥仅经 env, 严禁硬编码
 
-# --- 图片描述 VLM (默认 qwen; 可一行切方舟正式端点或 GLM) ---
-MULTIMODAL_VLM_MODEL=qwen-vl-plus       # 换方舟: doubao-seed-1-6-vision-250815; 换 GLM: glm-4.5v
-MULTIMODAL_VLM_BASE_URL=                # 空=默认随模型族(qwen→DashScope 兼容端点); 方舟=https://ark.cn-beijing.volces.com/api/v3; GLM=https://open.bigmodel.cn/api/paas/v4
-MULTIMODAL_VLM_API_KEY=                 # 空=QWEN_API_KEY; 方舟/GLM 需对应独立 key(plan 端点不含 VL, 实测 §2)
+# --- 图片描述 VLM (默认方舟 seed-2.0-lite, plan 端点实测; 可切 GLM/qwen) ---
+MULTIMODAL_VLM_MODEL=doubao-seed-2-0-lite-260428   # 备选: doubao-seed-evolving(质量优先) / glm-4v-flash(免费,ZHIPU key) / qwen-vl-plus(需自配 key)
+MULTIMODAL_VLM_BASE_URL=                # 空=复用 OPENAI_BASE_URL(plan 端点); GLM=https://open.bigmodel.cn/api/paas/v4; qwen=https://dashscope.aliyuncs.com/compatible-mode/v1
+MULTIMODAL_VLM_API_KEY=                 # 空=复用 OPENAI_API_KEY; GLM=ZHIPU_API_KEY; qwen=QWEN_API_KEY
 
 # --- 存储 (图片资产两期策略见 §6) ---
 MULTIMODAL_ASSET_STORE=local             # local(一期默认) | minio(二期)
@@ -151,7 +151,7 @@ DENSE_BACKEND=milvus                  # milvus(默认,零改动) | milvus_multim
 SPARSE_BACKEND=milvus                 # milvus | postgres | none(新, 仅配套 multimodal dense)
 ```
 
-新增依赖: `dashscope`(仅多模态 embedding SDK)。**不新增**: `dots_ocr`、`torch`、`qwen_vl_utils`、LangChain 系。
+新增依赖: **零**(默认 ark provider 用 httpx 直调 — openai 依赖自带 httpx; 响应 data 单对象兼容在 vectorizer 内处理)。`dashscope` 仅 `MULTIMODAL_EMBEDDING_PROVIDER=dashscope` 时安装。**不新增**: `dots_ocr`、`torch`、`qwen_vl_utils`、LangChain 系。
 
 ## 6. 数据模型
 
@@ -288,7 +288,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 2 | `tools/dots_ocr_client.py` | `ParsedPage{page_no, layout, md_content, page_image_jpg}`; `DotsOcrClient.healthy()/parse_pdf()/parse_pdf_fitz_fallback()`; `layout_to_md(page)` 自实现 | openai(现有), fitz, Pillow |
 | 3 | `tools/multimodal_chunker.py` | `MmChunk{kind, page_no, title, text, image_name, category}`; `chunk_document(pages)`; `_semantic_split()` 复用现有文本 embedding 仅作分块判据 | 2 |
 | 4 | `tools/multimodal_vlm.py` | `describe_image(image_b64, prev_text, next_text) -> str`(≤300字) | openai(现有) |
-| 5 | `tools/multimodal_vectorizer.py` | `detect_dim()/embed_texts()/embed_image_with_text()`; RPM 窗口+429 退避+截断标记 | dashscope |
+| 5 | `tools/multimodal_vectorizer.py` | provider 抽象(ark 默认: httpx 直调 `/embeddings/multimodal`, data 单对象兼容, 复用 OPENAI_* env 或独立覆盖; dashscope 备选); `detect_dim()/embed_texts()/embed_image_with_text()`; RPM 窗口+429 退避+截断标记 | httpx(自带); dashscope 可选 |
 | 6 | `tools/retrieval_backends/dense_milvus_multimodal.py` | `ensure_collection()/upsert_document_nodes()/search()/replace_document_nodes()`; 连接复用 milvus_store 单例模式, collection 操作独立方法 | 5 |
 | 7 | `scripts/ingest_multimodal_pdf.py` | 六步编排 CLI(§16) | 1-6 |
 | 8 | `tools/library/library_service.py` + `library_api.py` | §8 契约; multimodal 路显式实例化新 backend | 6 |
