@@ -99,6 +99,7 @@ class Config(BaseSettings):
     openai_embedding_model: str = Field(default="text-embedding-3-small")  # env: OPENAI_EMBEDDING_MODEL
     # Zhipu (BigModel) embeddings via OpenAI-compatible endpoint
     zhipu_api_key: str | None = Field(default=None)  # env: ZHIPU_API_KEY
+    zhipu_base_url: str = Field(default="https://open.bigmodel.cn/api/paas/v4")  # env: ZHIPU_BASE_URL; Coding Plan 订阅改 https://open.bigmodel.cn/api/coding/paas/v4 (chat 模型订阅内, embeddings 不在内)
     zhipu_embedding_model: str = Field(default="embedding-3")  # env: ZHIPU_EMBEDDING_MODEL
     # OpenRouter embeddings via OpenAI-compatible endpoint (nvidia/nemotron-3-embed-1b:free)
     openrouter_api_key: str | None = Field(default=None)  # env: OPENROUTER_API_KEY
