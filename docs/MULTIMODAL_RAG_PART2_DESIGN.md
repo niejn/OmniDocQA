@@ -367,3 +367,109 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 检索延迟 | multimodal 路 = 1 次 embedding(API ~200ms) + 1 次 Milvus search(<50ms); P95 目标 <1.5s(不含生成) |
 | 磁盘 | dpi=200 页图 ~150-300KB/页 + 插图; 100 页课件 ≈ 30-60MB(文档注明, 二期 MinIO 解耦) |
 | 可观测 | `log_rag` 新 stage: parse/chunk/describe/embed/upsert 各记 {document_id, counts, elapsed}; /library 响应带 trace_id+latency_ms(沿用现有中间件) |
+
+## 19. 系统架构总览 (跨部分横切, 2026-09-15 补全)
+
+### 19.1 服务拓扑
+
+```
+[浏览器 Next.js :3000]
+   ├─ /                文档问答(现有, /agent/api/ask 代理)
+   └─ /library         全库查询(MM-3, /agent/api/library 代理)
+[FastAPI :8000]
+   ├─ ask_api(现有, 零改动)          rag_nodes 路(dense=milvus+sparse=milvus)
+   ├─ library_api(MM-2 新增)         text 路(rag_nodes 全库 RRF) / multimodal 路(rag_multimodal)
+   └─ ingest CLI(离线)               EDGAR 管线(现有) / multimodal_pdf 管线(MM-1)
+[基础设施]
+   ├─ PostgreSQL(rag_documents/rag_nodes/eval_jobs — 事实源)
+   ├─ Milvus(rag_nodes: dense+BM25 7541 点 | rag_multimodal: 多模态, MM-1 建)
+   └─ 资产: 一期本地盘 MULTIMODAL_PAGES_DIR → 二期 rag-minio
+[模型服务(全部外部)]
+   ├─ ark plan 端点: glm-5.3(生成) / doubao-embedding-vision(多模态向量) / doubao-seed-2-0-lite(VLM 描述)
+   ├─ zhipu coding 端点(ZHIPU_BASE_URL): glm-5.3-flash 备选通道
+   └─ vLLM(自起, 解析 dots.mocr) + OpenRouter(文本 embedding) + 本地 4B reranker(GPU)
+```
+
+### 19.2 Collection 全景
+
+| collection | 维度 | 检索方式 | 写入方 | 消费方 |
+|---|---|---|---|---|
+| `rag_nodes` | 1536(OpenRouter nvidia) | dense+BM25 混合+scope 下推 | EDGAR 管线(现有) | /ask + /library text 路 |
+| `rag_multimodal` | 2048(ark doubao-embedding-vision, 探测) | dense-only(v1) | multimodal 管线(MM-1) | /library multimodal 路 |
+
+跨 collection 混合检索 = 非目标(§7 P2: 两库向量空间不同)。
+
+### 19.3 数据流全景(两入库两查询)
+
+入库A(文本, 现有): EDGAR HTML → section tree → rag_nodes(PG) → Milvus rag_nodes(dense+text)
+入库B(多模态, MM-1): PDF → dots.ocr/vLLM 页解析 → 分块 → VLM 描述(增强层) → ark 多模态向量 → rag_multimodal + rag_documents + 资产落盘
+查询A(/ask, 现有): 问题 → scope 下推 → 混合检索 → rerank → 生成
+查询B(/library): collection=text → 全库混合+RRF+rerank; =multimodal → ark 向量 → dense top-k → (可选)生成
+
+## 20. 数据生命周期与一致性
+
+### 20.1 文档删除级联矩阵 (delete_ingested_document 统一)
+
+| 存储对象 | 文本文档(现有路径) | 多模态文档(MM-2 接缝#9) | 失败恢复 |
+|---|---|---|---|
+| PG rag_documents | 删行 | 删行(source=multimodal_pdf) | 幂等重跑 |
+| PG rag_nodes | 删行 | 不涉及 | |
+| Milvus rag_nodes | dense 删点(sparse 同行) | 不涉及 | |
+| Milvus rag_multimodal | 不涉及 | `replace(id, [])` 删点 | |
+| 资产(页图/插图) | 不涉及 | `assets.delete_document(id)` | **级联顺序: 先 Milvus 后 PG 后资产** — 检索面先失效(用户不再看到半删状态证据卡), 资产残留由重删或清理脚本兜底; 三步各自幂等, 无跨存储事务(接受最终一致, 残留只占磁盘不影响正确性) |
+
+### 20.2 幂等与并发
+
+| 操作 | 幂等机制 | 并发防护 |
+|---|---|---|
+| 文本入库 | 同 document_id 重跑 replace(现有) | 人工分配 ID 段 |
+| 多模态入库 | 同 document_id 先删点再全量写(§7-5) | **同 ID 并发跑 = 竞态**: v1 加运行前检查 — `rag_documents` 已存在同 ID 且 source=multimodal_pdf → 拒绝并提示 `--replace` 语义(先删后入); 不做分布式锁(单机离线 CLI 场景过度设计) |
+| 文档删除 | 各步幂等(上表) | 重复执行无害 |
+
+## 21. 回滚与发布预案
+
+| 场景 | 回滚动作 | 成本 |
+|---|---|---|
+| 多模态后端缺陷影响文本主链 | `DENSE_BACKEND=milvus` 本就是默认 — **零改动边界保证文本链路从未变过**, 无需回滚动作 | 0(设计保证) |
+| /library 缺陷 | 前端下掉入口或 server 移除 router 注册(1 行) | 分钟级 |
+| 多模态数据污染 | delete 工具清 document + 资产; collection 可整删重建(`ensure_collection` 幂等) | 取决于入库量 |
+| 模型故障(ark/zhipu) | env 切备选链(§2 实测矩阵), embedding 换模型须重建 collection(维度校验拦截误配) | 分钟级 + 重嵌成本 |
+| 发布顺序 | MM-1(纯增量, 默认 env 不激活) → MM-2(默认 env 下 /ask 冒烟+70 单测回归为发布门禁) → MM-3 | 每步可独立回退 |
+
+## 22. 可观测性设计
+
+| 层 | 机制 | 覆盖 |
+|---|---|---|
+| 结构化日志 | `log_rag` 现有机制, 多模态新增 stage: parse/chunk/describe/embed/upsert(§18) | 入库全链路每文档 |
+| 请求追踪 | trace_id + latency_ms(沿用现有中间件), /library 响应契约内建 | 两查询路 |
+| LLM 观测 | langfuse: /ask 现有覆盖; /library 生成调用纳入同一 client 包装 | 生成+VLM 描述(批量入库的 VLM 调用记 langfuse, 关联 document_id) |
+| 质量门禁 | m4_benchmark.py 基建复用: MM-2 后跑 text 路零回归; 多模态 R4 指标(MultiModalFaithfulness)接入后纳入 | 发布门禁+趋势 |
+| 资源水位 | Milvus count(/collections 端点) + 资产目录体积(CLI 摘要输出) | 容量规划 |
+
+## 23. 安全与密钥矩阵
+
+| env | 用途 | 端点 | 暴露面 |
+|---|---|---|---|
+| OPENAI_API_KEY(ark) | 生成/多模态向量/VLM 描述 | ark plan | 后端 only |
+| ZHIPU_API_KEY + ZHIPU_BASE_URL | GLM 备选通道(coding plan) | bigmodel coding | 后端 only |
+| OPENROUTER_API_KEY | 文本 embedding(现有) | openrouter | 后端 only |
+| BOCHA_API_KEY | rerank 回退(现有) | bocha | 后端 only |
+| DASHSCOPE_API_KEY | 多模态 embedding 备选(预留, 空) | dashscope | 后端 only |
+| DOT_OCR_API_KEY | vLLM 解析(默认占位 0) | 自起 vLLM | 内网 |
+| LANGFUSE_* | 观测(现有) | langfuse | 后端 only |
+
+密钥纪律: 仅经 env(参考仓库硬编码 key 为反面教材, §9); `.env` 不入 git(现状); 前端仅经同源代理访问后端, 密钥零前端暴露。
+第五部分上传安全(届时实现): PDF magic bytes 校验(%PDF 头)+扩展名白名单+大小上限(§16 同源 200MB)+并发入库互斥(§20.2)+page-image 防穿越(§6 资产接口已内聚)。
+
+## 24. 需求追踪矩阵 (验收 ↔ 测试 ↔ 里程碑)
+
+| 验收(§10) | 测试来源(§17) | 里程碑 |
+|---|---|---|
+| 1 零改动回归 | 70 存量单测 + /ask 冒烟 | MM-2 发布门禁 |
+| 2 env 切换 | factory 混配矩阵单测 | MM-2 |
+| 3 混配 fail-fast | 同上 | MM-2 |
+| 4 入库幂等/降级 | backend FakeClient 幂等 + CLI 端到端(含停 vLLM) | MM-1 |
+| 5 查询图文证据 | library_service 单测 + curl 验收 | MM-2(+MM-3 UI 面) |
+| 6 新单测六类 | §17 表全部 | MM-1/MM-2 各自交付 |
+| bbox 坐标验证(§14.1-1) | 真 PDF 首跑人工比对 | MM-1 第一周 |
+| 资产两期迁移(§11) | 抽样字节校验 | 二期 |

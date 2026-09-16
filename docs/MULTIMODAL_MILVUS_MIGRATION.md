@@ -636,3 +636,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.24 | 图片描述 VLM 默认定稿 doubao-seed-2-0-lite-260428(plan 端点实测 vision 直读通过, RPM 30000 匹配批量入库, thinking 须禁用); qwen-vl-plus 降末选(QWEN_API_KEY 实际为空); GLM glm-4v-flash 备选(ZHIPU key 现成); 补充架构说明 — 多模态 embedding 管"找得到", VLM 描述管"讲得出", 不可互替 |
 | v1.25 | VLM 备选链实测补全: glm-5.3 仅文本(生成模型看不了图)、glm-5.3-flash 原生多模态可用(thinking 不可禁)、glm-4v-flash 免费档可用(读图内文字准确)、4.5v/4v-plus 需充值; 默认维持 doubao-seed-2-0-lite(可禁 thinking+RPM 30000 批量最优) |
 | v1.26 | GLM Coding Plan 端点记录(anthropic/coding-chat/response/标准四端点总表 §4.5); 实测判定 ZHIPU_API_KEY 为 Coding Plan 订阅(glm-5.3-flash 视觉在 coding 端点订阅内可用, 标准端点按量 429) → glm-5.3-flash 双订阅通道; `ZHIPU_BASE_URL` 入 config/.env/env.example |
+| v1.27 | 系统设计补全(PART2_DESIGN §19-24): 服务拓扑/collection 全景/数据流、删除级联矩阵与并发防护(先 Milvus 后 PG 后资产, 最终一致)、回滚预案(零改动边界=文本链天然免回滚)、可观测(log_rag/langfuse/m4 门禁)、密钥矩阵与上传安全、需求追踪矩阵 |
