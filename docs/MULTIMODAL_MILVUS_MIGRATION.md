@@ -375,7 +375,7 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 |---|---|
 | 全量常驻(2026-09-15 修正, 否决级联) | **书与章始终全部可见可选, 无"先选书才展章"门槛** — 按章筛是独立诉求(例: 只要某几章, 不限书); 形态 = 按书分组的折叠面板(默认全展开, 章多时区内滚动+搜索框过滤标签名); 选中书**不约束**其章 — 二者独立勾选 |
 | kind | 筛选面板 kind(全部/文本/图片)是**检索前下推**(改检索本身); 与结果区过滤 chips(§5.3, 显示层)并存且视觉区分 — 面板放检索区上方, 结果 chips 在证据区标题行 |
-| 归一语义 | 书/章选择在前端归一为 **document_id 并集**(选书=该书全部章; 选章=单个 document_id; 重复去重)随请求下发的只有 document_id 集合 — 后端单表达式 `document_id in [...] and kind in [...]`, 无书章交集陷阱(选书A + 选书B的第c章 = A全部 ∪ B.c章) |
+| 归一语义 | 书/章勾选原样随请求下发(books/chapters), **后端 library_service 单点归一**为 document_id 并集(选书=该书全部章; 选章=单个 doc; 去重) → `document_id in [...] and kind in [...]`, 无书章交集陷阱(选书A+书B第c章 = A全部 ∪ B.c章)。归一放后端: filter 型集合动态跟随需同一展开逻辑(§6.2), 单点可测 |
 | 触发时机 | filter 变更**不自动重查**(避免连点打爆), 下次[提问]生效; 若已有结果, 面板显示"筛选已变更, 重新提问生效"提示条 |
 | 集合 | "保存为集合"按钮(当前 filter 组合命名保存) → "自定义集合"下拉(含 chunk 计数/失效数); 选中集合 = set_id 检索(面板其余 chips 置灰禁用, 二选一语义) |
 | 持久化 | filters/选中集合/collection 记 localStorage, 刷新恢复; URL 参数化(可分享筛选链接)为 P2 |
@@ -672,3 +672,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.29 | 前端标签筛选器交互定稿(§5.2.0): 挂载拉 /filters 标签面 → 书/章级联 chips 多选(选中书才展开章) → kind 检索前下推(与结果区显示层过滤区分) → 点提问才生效(不自动重查, 变更提示条) → 集合下拉/存为集合/勾选入集合; 线框与组件树更新(FilterBar/SaveSetDialog/勾选浮条); localStorage 持久化+失效清洗; 组件树/线框同步 |
 | v1.30 | Bocha 远程 reranker 移除(见 2026-09-16 决策): rerank 仅本地 CrossEncoder, CompositeReranker 级联简化为工厂直选 |
 | v1.30 | 修正 filter 语义与交互: 否决"选书才展章"级联(按章筛是独立诉求) → 书/章全量常驻可选(折叠面板+搜索); books/chapters 归一为 document_id **并集**下推(单表达式 `document_id in [...] and kind in [...]`), 消除书章交集陷阱(选书A+选书B的章=并集而非空集); book_id/chapter_label 降级为 evidence 冗余展示字段(零回查 PG) |
+| v1.31 | 详细设计定稿: 归一实现位置修正(前端→后端 library_service 单点, 保 filter 集合动态跟随); 蓝图签名对齐(book/chapter 字段/search expr 构造/MmHit 扩展/repository 四方法); 实现决策补 6-8(自然排序算法/chapter_label 生成/MmHit 字段); 错误矩阵+测试计划扩充(归一 422/set 404/超限/重名); §11.1 任务级 WBS(MM-1×5/MM-2×4/MM-3×3, 估时+依赖+验证映射) |
