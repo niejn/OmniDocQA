@@ -354,6 +354,8 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 ### 5.2 查询交互
 
 - collection 下拉(native `<select>`, 数据来自 collections 端点, 沿用 `DocumentScope.tsx` 的 select 模式); 无 DocumentScope/文档选择。
+- **书籍/章节级联筛选器**(2026-09-15 需求, 数据来自 `GET /library/filters`): 页面初始化渲染书 chips(多选) → 选中书展开其章 chips(多选) → 可再叠加 `[文本|图片]` kind 筛选; 全不选=全库。选中的 filter 组合可"保存为集合"(命名) → 集合出现在筛选器旁的"自定义集合"下拉, 选中即以其为检索范围(set_id)。
+- **chunk 勾选入集合**: 证据卡右上角复选框(仅检索结果模式有意义), 勾选后底部浮条"加入集合"(选已有/新建) — 枚举型集合(≤500 chunk)。
 - 问题输入 + Enter 提交、top_k(沿用 `page.tsx` 交互与 clamp 逻辑)。
 - 模式开关: "生成答案 / 仅检索"分段按钮(沿用 `DocumentScopeMode` 切换样式)。
 
@@ -637,3 +639,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.25 | VLM 备选链实测补全: glm-5.3 仅文本(生成模型看不了图)、glm-5.3-flash 原生多模态可用(thinking 不可禁)、glm-4v-flash 免费档可用(读图内文字准确)、4.5v/4v-plus 需充值; 默认维持 doubao-seed-2-0-lite(可禁 thinking+RPM 30000 批量最优) |
 | v1.26 | GLM Coding Plan 端点记录(anthropic/coding-chat/response/标准四端点总表 §4.5); 实测判定 ZHIPU_API_KEY 为 Coding Plan 订阅(glm-5.3-flash 视觉在 coding 端点订阅内可用, 标准端点按量 429) → glm-5.3-flash 双订阅通道; `ZHIPU_BASE_URL` 入 config/.env/env.example |
 | v1.27 | 系统设计补全(PART2_DESIGN §19-24): 服务拓扑/collection 全景/数据流、删除级联矩阵与并发防护(先 Milvus 后 PG 后资产, 最终一致)、回滚预案(零改动边界=文本链天然免回滚)、可观测(log_rag/langfuse/m4 门禁)、密钥矩阵与上传安全、需求追踪矩阵 |
+| v1.28 | 书籍层级与集合需求(用户): ①Book→Chapter(=PDF)→Chunk 层级, 同 `--book` 多章节 PDF 自动聚合, Milvus 加 book_id/chapter_label 标量 filter 下推, `/library/filters` 聚合端点; ②前端启动拉 filter 标签 + 动态圈选保存自定义集合(PG 新表 `library_sets`, filter 型/枚举型) + chunk 勾选入集合; ask 扩 filters/set_id 参数(PART2_DESIGN §6.1/6.2/§8) |

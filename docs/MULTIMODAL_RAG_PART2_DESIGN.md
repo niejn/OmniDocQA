@@ -181,14 +181,46 @@ SPARSE_BACKEND=milvus                 # milvus | postgres | none(新, 仅配套 
 | `text` | VARCHAR | BM25 输入(正文/image 描述); jieba analyzer |
 | `category` | VARCHAR | layout category(降级模式为 `fitz`) |
 | `image_ref` | VARCHAR | **asset key**(`{document_id}/{name}.jpg`), 与存储后端无关, 仅 image 块 |
+| `book_id` | VARCHAR(索引) | **书籍层级**(§6.1): 所属书名规范化串; 独立文档=其自身书名; filter 下推用 |
+| `chapter_label` | VARCHAR | 章节标签(`{book_id} · 第{N}章 · {章节名/文件名}`); 章=一个 PDF 文档 |
 | `sparse` | SPARSE_FLOAT_VECTOR | Milvus BM25 Function 自动生成, **v1 查询不用**(预留) |
 | `dense` | FLOAT_VECTOR(dim=探测) | 多模态向量, COSINE + AUTOINDEX |
 
 v1 检索仅 dense; sparse 字段为 §7 P2 预留(与 rag_nodes 的 text 加权策略不同: image 块的 text=VLM 描述, 权重设计延后)。
 
+### 6.1 书籍层级模型与 metadata filter (2026-09-15 需求扩展)
+
+```
+Library(全库) ─ Book(逻辑书, book_id) ─ Chapter(章 = 一个 PDF = document_id) ─ Chunk(text|image)
+```
+
+**自动合并语义**: 同一次 CLI 调用 + 同 `--book` 值 = 一本书; 章节 = 匹配文件按**文件名自然排序**编号 1..N; 不做文件名启发式猜书(脆、易错聚合)。未指定 `--book` 的 PDF = 独立文档(自成一书, book_id=文件名去扩展名)。
+
+| 存储 | 承载 |
+|---|---|
+| Milvus `book_id`/`chapter_label` 标量字段(索引) | filter 下推: `book_id in [...]`、`book_id in [...] and chapter_label in [...]`、`kind in [...]` |
+| PG `rag_documents.metadata` 追加 `{book_id, chapter_index, chapter_label}` | 事实源; `/library/filters` 聚合数据源(不建新表 — 书量级小, metadata GROUP BY 足够; 第五部分动态 collection 时再评估) |
+
+### 6.2 用户自定义集合 (PG 新表 `library_sets`, 多模态域专用, 不碰现有表)
+
+前端动态 filter 圈选或搜索结果手动勾选 chunk → 保存为命名集合 → 集合成为可检索单位("选集/书架"模式):
+
+```sql
+CREATE TABLE library_sets (
+  set_id      TEXT PRIMARY KEY,            -- uuid
+  name        TEXT NOT NULL UNIQUE,
+  kind        TEXT NOT NULL,               -- 'filter'(动态) | 'enumerated'(静态勾选)
+  filter_json JSONB,                       -- kind=filter: {books?, chapters?, kinds?} → 查询时展开为 Milvus 表达式; 库变化集合自动跟随
+  chunk_ids   JSONB,                       -- kind=enumerated: 显式 chunk PK 列表(上限 500, 超限提示改用 filter 型)
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+```
+
+枚举型检索 = Milvus `id in [chunk_ids]`(PK 过滤); 删除文档时其 chunk 留在 chunk_ids 中但检索自然落空(惰性失效, 不做级联清理 — 集合详情页显示失效计数提示)。
+
 ### PG `rag_documents` (复用, 不改表)
 
-新行 `metadata`: `{source: "multimodal_pdf", pages: N, chunks: {text: X, image: Y}, dpi: 200, embedding_model: ...}`。catalog/删除工具复用。
+新行 `metadata`: `{source: "multimodal_pdf", pages: N, chunks: {text: X, image: Y}, dpi: 200, embedding_model: ..., book_id, chapter_index, chapter_label}`。catalog/删除工具复用。
 
 ### 图片资产存储 (两期策略, 接口一期定型)
 
@@ -229,7 +261,7 @@ MULTIMODAL_PAGES_DIR/
 
 ## 7. 入库管线 (`scripts/ingest_multimodal_pdf.py`, 六步)
 
-`--data-dir --glob "*.pdf" --document-id-start N`:
+`--data-dir --glob "*.pdf" --document-id-start N [--book "书名"] [--chapter-start N]`(§6.1: 同 `--book` 多 PDF 自动聚合为一本书, 章节按文件名自然排序编号; `--chapter-start` 设起始章号默认 1):
 
 1. **解析**(`dots_ocr_client.py`): 探测 `DOT_OCR_BASE_URL` 可达 → 逐页 layout JSON + md(线程池, 页序排序, 失败页记清单继续); 不可达且降级开 → fitz 文本(`## 第 N 页` 前缀)+整页 jpg, 无插图。
 2. **分块**(自实现, 不引 LangChain, v1 §4.2 已定): 每页 md → H1-H3 标题边界分块(~60 行) → 正则抽插图占位单独成 image 块、正文去图 → >1000 字语义分块(切句→相邻余弦→percentile 断点, 复用现有**文本** embedding 仅作分块判据, 不入库)→ 标题层级补全拼 title(~40 行)。
@@ -240,9 +272,12 @@ MULTIMODAL_PAGES_DIR/
 
 ## 8. 查询 API (`/agent/api/library`)
 
-v1 §4.3 契约全部沿用(ask/collections/page-image 三端点、请求响应模型、错误契约 422/404/502、路径穿越防护), 唯一修正:
+v1 §4.3 契约沿用(ask/collections/page-image 三端点、请求响应模型、错误契约 422/404/502、路径穿越防护), 修正与扩展:
 
 - **multimodal 检索改走 `MilvusMultimodalDenseBackend.search()`**(§4.4 显式实例化), 不再是"library_service 内联调用 embedding+Milvus" — 后端化统一了删除工具/factory/维度校验的复用面。
+- **ask 请求扩展**(2026-09-15 需求, 仅 multimodal 路; text 路忽略并告警): `filters: {books?: string[], chapters?: string[](=document_id), kinds?: ("text"|"image")[]}` 与 `set_id?: string` **二选一**(同传 422); 均省略 = 全库(现状)。filter → Milvus 标量表达式下推(`book_id in [...] and chapter_label in [...] and kind in [...]`); set_id → §6.2 展开。evidence 不变。
+- **新端点 `GET /agent/api/library/filters`**: 页面初始化拉取可用 filter 标签面 — 从 `rag_documents.metadata` 聚合: `{books: [{book_id, title, chapter_count, chunk_count?, chapters: [{document_id, chapter_index, chapter_label, filename, pages, chunks}]}], kinds: ["text","image"]}`(chunk_count 惰性: 书量大时按需)。前端据此渲染级联筛选器。
+- **新端点 集合 CRUD**(§6.2): `POST /library/sets {name, filter?|chunk_ids?}`(二选一, chunk_ids ≤500) / `GET /library/sets`(含 chunk 失效计数) / `DELETE /library/sets/{set_id}`。重名 422; 集合检索直接走 ask 的 set_id。
 - 其余(text 路 RRF、rerank 复用、CONTEXT_CHAR_BUDGET、generate_answer 语义、证据 `[文件名:p页]`)不变。
 
 ## 9. 非功能需求 (v1 §4.4 全部沿用)
@@ -258,15 +293,18 @@ v1 §4.3 契约全部沿用(ask/collections/page-image 三端点、请求响应�
 3. **混配 fail-fast**: `milvus_multimodal` + `sparse=milvus` 启动即报错(新单测覆盖)。
 4. **入库**: 课件 PDF → `rag_documents` +1, `rag_multimodal` 点数=文本块+图片块; 重跑幂等; 停 DOTS·OCR 降级入库成功。
 5. **查询**: `POST /agent/api/library/ask {collection:"multimodal", question:"有界流和无界流的定义"}` → 200, answer 非空, evidence 相关页 `image_url` 可 GET 到字节。
-6. **单测**(新增): 维度校验失败路径 / 429 退避 / 路径穿越拒绝 / factory 混配矩阵 / layout JSON→md 转换 / fitz 降级分支。
+6. **单测**(新增): 维度校验失败路径 / 429 退避 / 路径穿越拒绝 / factory 混配矩阵 / layout JSON→md 转换 / fitz 降级分支 / filter 表达式构造 / 集合展开。
+7. **书籍聚合**(§6.1): 同 `--book` 入库 3 个章节 PDF → `/library/filters` 返回 1 本书 3 章; `filters:{books:[...]}` 检索命中仅该书; `filters:{chapters:[doc_id]}` 命中仅该章。
+8. **自定义集合**(§6.2): 前端圈选 filter 保存集合 → `set_id` 检索结果 ⊆ 集合范围; 勾选 chunk 保存枚举集合 → 检索恰含所选; 删除集合后 set_id 检索 404; chunk_ids>500 → 422。
+9. **零改动不变**: filter/集合全部能力不影响 `/ask` 与 text 路(text 路传 filters → 忽略+告警日志, 契约不报错)。
 
 ## 11. 里程碑
 
 | 阶段 | 内容 | 交付物 |
 |---|---|---|
-| **MM-1 解析+入库** | `dots_ocr_client.py` + 分块 + `multimodal_vectorizer.py` + `dense_milvus_multimodal.py` + `multimodal_asset_store.py`(抽象+local 实现) + CLI | 真 PDF 入库, 验收 1/3/4 |
-| **MM-2 检索 API** | `library_api.py` + `library_service.py` + `SPARSE_BACKEND=none` + ask 守卫 | 验收 2/5/6 |
-| **MM-3 前端** | 第三部分 `/library` 页(独立设计, 见迁移文档 §5) | 验收 5 的 UI 面 |
+| **MM-1 解析+入库** | `dots_ocr_client.py` + 分块 + `multimodal_vectorizer.py` + `dense_milvus_multimodal.py`(schema 含 book_id/chapter_label) + `multimodal_asset_store.py`(抽象+local 实现) + CLI(`--book`/`--chapter-start` 聚合) | 真 PDF 入库(含多章节书), 验收 1/3/4/7 入库面 |
+| **MM-2 检索 API** | `library_api.py` + `library_service.py`(filters/set_id 下推) + `GET /library/filters` 聚合 + PG `library_sets` 表 + 集合 CRUD + `SPARSE_BACKEND=none` + ask 守卫 | 验收 2/5/6/7 检索面/8 |
+| **MM-3 前端** | 第三部分 `/library` 页 + 书籍/章节级联筛选器(启动拉 /filters) + 证据卡"加入集合"勾选 + 集合管理下拉(见迁移文档 §5) | 验收 5/7/8 的 UI 面 |
 | **二期 MinIO 资产迁移** | `MinioAssetStore` + `scripts/multimodal_assets_migrate.py` + compose `rag-minio`; env 切 `MULTIMODAL_ASSET_STORE=minio` | 图片字节抽样校验全等, API/前端零改动 |
 
 MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收后独立排期(asset store 接口已定型, 迁移成本=实现类+搬迁脚本)。
@@ -306,6 +344,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 7 | `scripts/ingest_multimodal_pdf.py` | 六步编排 CLI(§16) | 1-6 |
 | 8 | `tools/library/library_service.py` + `library_api.py` | §8 契约; multimodal 路显式实例化新 backend | 6 |
 | 9 | 接缝×3 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵; `rag_service.answer_question` 3 行守卫; `delete_ingested_document` 多模态分支(删点+`assets.delete_document`) | 6 |
+| 10 | `tools/library/library_repository.py` | `library_sets` 表 CRUD + `/library/filters` 的 rag_documents.metadata 聚合查询 + filter→Milvus 表达式构造(单测重点) | PG |
 
 ### 14.1 关键实现决策 (设计期定死, 实现期不再议)
 
