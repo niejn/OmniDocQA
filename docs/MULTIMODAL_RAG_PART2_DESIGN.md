@@ -199,7 +199,7 @@ Library(全库) ─ Book(逻辑书, book_id) ─ Chapter(章 = 一个 PDF = docu
 | 存储 | 承载 |
 |---|---|
 | Milvus `book_id`/`chapter_label` 标量字段(索引) | filter 下推: `book_id in [...]`、`book_id in [...] and chapter_label in [...]`、`kind in [...]` |
-| PG `rag_documents.metadata` 追加 `{book_id, chapter_index, chapter_label}` | 事实源; `/library/filters` 聚合数据源(不建新表 — 书量级小, metadata GROUP BY 足够; 第五部分动态 collection 时再评估) |
+| PG `rag_documents.metadata` 追加 `{book_id, chapter_index, chapter_label}` | 事实源; `/library/filters` 聚合数据源。**层级关系用 metadata 不建表的理由**(2026-09-15 决策): 书当前无独立属性(仅分组标签, 全部需求在读路径)、零 schema 变更、删除无孤儿行; 引用完整性由 CLI 写入时 trim 规范化 book_id 保证。**升级 `library_books` 表的触发条件**(任一出现即建表, metadata 保留冗余做 Milvus 下推): ①书需独立属性(作者/封面/权限) ②重命名成高频操作 ③书过百本且 /filters 聚合变慢 ④第五部分动态 collection 落地。对照: 用户集合(§6.2)跨文档+chunk 级+CRUD 生命周期+唯一名约束, 故必须建表 — 两者的分界 = 分组标签 vs 一等实体 |
 
 ### 6.2 用户自定义集合 (PG 新表 `library_sets`, 多模态域专用, 不碰现有表)
 
