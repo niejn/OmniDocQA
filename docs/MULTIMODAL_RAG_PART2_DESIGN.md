@@ -37,7 +37,7 @@
 | **多模态 embedding** | 火山方舟 `doubao-embedding-vision`(订阅 plan 端点, 实测解析为 251215 版, dim=2048) | `MULTIMODAL_EMBEDDING_PROVIDER=ark`(默认)\|`dashscope` + `MULTIMODAL_EMBEDDING_MODEL` / `_DIM`(0=自动探测) | ark: httpx 直调 `{base}/embeddings/multimodal`, input=content-block 数组 — text 块 `[{type:text}]`, image 块 `[{type:image_url, url:"data:image/jpeg;base64,..."}, {type:text}]`; **响应 `data` 为单对象**(非 OpenAI 数组, 实现须兼容) | dashscope 备选: `multimodal-embedding-one-peace-v1` / `tongyi-embedding-vision-flash-*`(SDK `{image, text}`); 换模型必须核维度 |
 | **图片描述 VLM** | **`doubao-seed-2-0-lite-260428`(plan 端点实测通过, 零新增配置)** — 高并发批量(RPM 30000)匹配离线入库场景 | `MULTIMODAL_VLM_MODEL` + `MULTIMODAL_VLM_BASE_URL` / `_API_KEY`(可选, 默认复用 OPENAI_* 即 plan 端点) | OpenAI 兼容 chat + image_url base64 block; **须 `extra_body={thinking:{type:disabled}}`**(该系模型 thinking 默认开, 实测带 reasoning_content, 批量描述禁用省时省 token — 复用 RAGAS judge 修复经验) | 同端点备选 `doubao-seed-evolving`(实测通过, 质量优先); GLM `glm-4v-flash`(免费)/`glm-4v-plus`(`ZHIPU_API_KEY` 现成, bigmodel v4 端点); `qwen-vl-plus` 末选(`QWEN_API_KEY` 实际为空) |
 
-**实测记录(2026-09-15, 订阅 plan 端点)**: ①`doubao-embedding-vision` 文本/图片-base64/图文联合三种输入均 200, dim=2048; ②base64 data URI 被服务端解码(1×1 图报"最小 14px", 换 320×240 通过 — 一期本地图片无需公网 URL, 二期 MinIO 亦不必开公网); ③响应 `data` 为单对象含 `embedding`, 与 OpenAI 数组结构不同; ④`doubao-seed-1-6-vision-250815` 与 `glm-4.5v` 在 plan 端点 404 UnsupportedModel — VL 描述模型若走方舟需正式按量端点+独立 key, 或走 GLM bigmodel。⑤**`doubao-seedream-5.0-pro` 不适用图片描述** — 属图像生成模型(文生图/图生图), 与视觉理解(图→文)是方舟两条独立产品线; 评估排除(2026-09-15)。⑥`doubao-seed-2-0-lite-260428` 与 `doubao-seed-evolving` 在 plan 端点 chat+image_url 直读成功(描述准确, finish=stop), 但 thinking 默认开(reasoning_content 非空) — 实现须禁用; `doubao-seed-2-1-pro-260628` 404。⑦key 盘点: `QWEN_API_KEY` 为空(原默认 qwen-vl-plus 的"key 现成"假设不成立), `ZHIPU_API_KEY` 现成(GLM 备选可用)。**架构注**: 多模态 embedding 管"找得到"(图→向量, 检索用), VLM 描述管"讲得出"(图→文, 生成 LLM 是纯文本模型看不了图 + BM25 text 字段 + 证据卡 preview) — 二者不可互替。
+**实测记录(2026-09-15, 订阅 plan 端点)**: ①`doubao-embedding-vision` 文本/图片-base64/图文联合三种输入均 200, dim=2048; ②base64 data URI 被服务端解码(1×1 图报"最小 14px", 换 320×240 通过 — 一期本地图片无需公网 URL, 二期 MinIO 亦不必开公网); ③响应 `data` 为单对象含 `embedding`, 与 OpenAI 数组结构不同; ④`doubao-seed-1-6-vision-250815` 与 `glm-4.5v` 在 plan 端点 404 UnsupportedModel — VL 描述模型若走方舟需正式按量端点+独立 key, 或走 GLM bigmodel。⑤**`doubao-seedream-5.0-pro` 不适用图片描述** — 属图像生成模型(文生图/图生图), 与视觉理解(图→文)是方舟两条独立产品线; 评估排除(2026-09-15)。⑥`doubao-seed-2-0-lite-260428` 与 `doubao-seed-evolving` 在 plan 端点 chat+image_url 直读成功(描述准确, finish=stop), 但 thinking 默认开(reasoning_content 非空) — 实现须禁用; `doubao-seed-2-1-pro-260628` 404。⑦key 盘点: `QWEN_API_KEY` 为空(原默认 qwen-vl-plus 的"key 现成"假设不成立), `ZHIPU_API_KEY` 现成(GLM 备选可用)。⑧GLM `embedding-3`(2048 维)为**纯文本**嵌入(input 仅 string, 无 image) — 不能用于 multimodal collection(图文须同空间); 且与 doubao-embedding-vision 维度巧合相同但**维度相同≠同空间**, 禁止混用; 文本链路有零改动约束亦不换。**架构注**: 多模态 embedding 管"找得到"(图→向量, 检索用), VLM 描述管"讲得出"(图→文, 生成 LLM 是纯文本模型看不了图 + BM25 text 字段 + 证据卡 preview) — 二者不可互替。
 
 推理参数: 解析 VLM `temperature=0.1, max_completion_tokens=16384`(env 可覆盖); embedding 限流 `MULTIMODAL_EMBED_RPM=120` + 429 指数退避(5 次, base 2.0s, 复刻参考)。
 
@@ -139,6 +139,7 @@ DASHSCOPE_API_KEY=                      # 仅 provider=dashscope 时需要; 密�
 MULTIMODAL_VLM_MODEL=doubao-seed-2-0-lite-260428   # 备选: doubao-seed-evolving(质量优先) / glm-4v-flash(免费,ZHIPU key) / qwen-vl-plus(需自配 key)
 MULTIMODAL_VLM_BASE_URL=                # 空=复用 OPENAI_BASE_URL(plan 端点); GLM=https://open.bigmodel.cn/api/paas/v4; qwen=https://dashscope.aliyuncs.com/compatible-mode/v1
 MULTIMODAL_VLM_API_KEY=                 # 空=复用 OPENAI_API_KEY; GLM=ZHIPU_API_KEY; qwen=QWEN_API_KEY
+MULTIMODAL_DESCRIBE_MODE=vlm            # vlm(默认, 基础层+VLM 增强) | context(纯上下文零 API 成本)
 
 # --- 存储 (图片资产两期策略见 §6) ---
 MULTIMODAL_ASSET_STORE=local             # local(一期默认) | minio(二期)
@@ -220,7 +221,7 @@ MULTIMODAL_PAGES_DIR/
 
 1. **解析**(`dots_ocr_client.py`): 探测 `DOT_OCR_BASE_URL` 可达 → 逐页 layout JSON + md(线程池, 页序排序, 失败页记清单继续); 不可达且降级开 → fitz 文本(`## 第 N 页` 前缀)+整页 jpg, 无插图。
 2. **分块**(自实现, 不引 LangChain, v1 §4.2 已定): 每页 md → H1-H3 标题边界分块(~60 行) → 正则抽插图占位单独成 image 块、正文去图 → >1000 字语义分块(切句→相邻余弦→percentile 断点, 复用现有**文本** embedding 仅作分块判据, 不入库)→ 标题层级补全拼 title(~40 行)。
-3. **图片描述**: image 块带前后文调 `MULTIMODAL_VLM_MODEL` 生成 ≤300 字(复刻参考 prompt: 结合前文/后文)。
+3. **图片描述(分层策略, 2026-09-15 修订)**: 基础层 = caption+紧邻上下文文字从 layout 直接拼接(零成本, 永远有); 增强层 = `MULTIMODAL_DESCRIBE_MODE=vlm`(默认)时带上下文调 `MULTIMODAL_VLM_MODEL` 生成 ≤300 字读出**图内内容**(数字/趋势/极值 — Picture 元素的 text 字段被 dots.ocr prompt 省略, 图内信息只在像素里, 纯上下文拼不出); `=context` 时跳过 VLM 零 API 成本(接受图内信息缺失)。VLM 失败 → 降级为基础层描述(非占位符)。
 4. **向量化**: `multimodal_vectorizer.py` — text 块 `{text: title+"："+正文}`; image 块 `{image: base64, text: 描述}`; 固定窗口限流+429 退避。
 5. **存储**: `MilvusMultimodalDenseBackend.upsert_document_nodes()`(含 collection 首建/维度校验) + `rag_documents` 登记 + 落盘。幂等: 先 `document_id==X` 删点再全量写。
 6. **可观测**: `log_rag` 各 stage; 失败页/失败块清单 + 截断标记(`text_truncated: true`)。
@@ -309,7 +310,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 解析 | vLLM 不可达 | `DOT_OCR_FALLBACK_FITZ=true` → fitz 降级整批; false → CLI 退出码 2 | log_rag stage=parse |
 | 解析 | 单页 JSON 解析失败 | filtered 降级(§14.1-5), 计入失败页清单 | 失败清单 JSON |
 | 解析 | 单页请求超时/异常 | 同 filtered; 重试 1 次 | 同上 |
-| 描述 | VLM 单图失败 | 该 image 块 text=空描述占位(`[图片描述生成失败]`), 不向量化阻塞; 计入失败块清单 | 失败清单 |
+| 描述 | VLM 单图失败 | 降级为**基础层描述**(caption+上下文拼接, §7-3), 不向量化阻塞; 计入失败块清单 | 失败清单 |
 | 向量化 | 429 | 指数退避 5 次(120RPM 窗口内) | log |
 | 向量化 | 退避耗尽/其它异常 | 整批 fail-fast(半入库状态由幂等重跑覆盖) | CLI 退出码 3 |
 | 存储 | 维度不符 collection | upsert 前 fail-fast, 报"换模型须重建 collection" | ValueError |
