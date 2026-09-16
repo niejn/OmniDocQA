@@ -634,3 +634,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.22 | 二期设计补全: 实现蓝图(9 文件级职责+签名, 关键实现决策: bbox 裁剪插图/跨页标题继承/filtered 页/协议兼容)、错误处理矩阵、CLI 契约(退出码/幂等/上限防护)、测试计划、性能预算与可观测性 |
 | v1.23 | 模型栈定稿(实测驱动): 多模态 embedding 默认火山方舟 doubao-embedding-vision(plan 端点实测 dim=2048/base64 data URI/图文联合/响应 data 单对象), provider=ark\|dashscope 可切, 新增依赖归零; 图片描述 VLM 可一行切方舟正式端点(doubao-seed-1-6-vision-250815, plan 端点实测 404)或 GLM glm-4.5v; doubao-seedream-5.0-pro 属图像生成模型不适用图片描述, 评估排除 |
 | v1.24 | 图片描述 VLM 默认定稿 doubao-seed-2-0-lite-260428(plan 端点实测 vision 直读通过, RPM 30000 匹配批量入库, thinking 须禁用); qwen-vl-plus 降末选(QWEN_API_KEY 实际为空); GLM glm-4v-flash 备选(ZHIPU key 现成); 补充架构说明 — 多模态 embedding 管"找得到", VLM 描述管"讲得出", 不可互替 |
+| v1.25 | VLM 备选链实测补全: glm-5.3 仅文本(生成模型看不了图)、glm-5.3-flash 原生多模态可用(thinking 不可禁)、glm-4v-flash 免费档可用(读图内文字准确)、4.5v/4v-plus 需充值; 默认维持 doubao-seed-2-0-lite(可禁 thinking+RPM 30000 批量最优) |
