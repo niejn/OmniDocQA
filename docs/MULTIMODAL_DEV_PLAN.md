@@ -137,5 +137,21 @@ gold set(10-20题): LLM 反向合成(chunk→考题, 喂 N chunk 即 N 跳) + �
 | 项 | 状态 | 阻塞 |
 |---|---|---|
 | vLLM 解析服务位置（本机/远端） | 待 T1.2 冒烟时确认 | 不阻塞 T1.1/T1.3/T1.4（fitz 降级路可先行） |
-| 测试 PDF 样例（含多章节书） | 需准备 1 本书(3+ 章节 PDF) + 1 独立文档 | T1.5 前 |
+| 测试 PDF 样例 | ✅ 已定位（下表, 无需新找） | T1.5 前 |
 | ark/zhipu key | ✅ 已实测 | — |
+
+### 3.5 参考项目与测试素材（2026-09-16 落实）
+
+**参考项目**（迁移文档 §2 借鉴映射的实物来源，对照实现时查证用）：
+
+- `D:\mashibing\RAG_RAGAS\code` — 课程配套多模态 RAG 工程：`dots_ocr/`(DOTS·OCR 解析器), `Multimodal_RAG/`(分块 `splitters/splitter_md.py`、图片描述 `milvus_db/db_operator.py`、embedding 限流 `utils/embeddings_utils.py`), collection 建法(原 `创建一个Collection.py`)
+- dots.ocr 官方仓库（解析协议权威源）：https://github.com/rednote-hilab/dots.ocr —【详设】§1 有源码级借鉴映射表
+
+**测试 PDF 样例**（已核实页数/体积，均在 500 页/200MB 上限内）：
+
+| 样例 | 路径 | 用途 |
+|---|---|---|
+| 主课件（84 页/7MB） | `D:\mashibing\RAG_RAGAS\课件\GraphRAG+多模态RAG+Ragas的项目开发.pdf` | 内容自指（讲多模态 RAG 的多模态文档）；按页 1/3 拆成 `chapter-01/02/03.pdf`（fitz 3 行）→ `--book` 入库测**书籍聚合 + 章 filter** |
+| 英文论文（25 页/1MB） | `D:\mashibing\large-model-finetuning-and-deployment-course-courseware\Parameter-EfficientFine-TuningforLargeModels.pdf` | 无 `--book` 入库测**独立文档成书** + 英文语料 + dense 检索跨语言 |
+
+章节拆分（测试准备一次性脚本）：`fitz.open(主课件)` → 三段 `insert_pdf` → `tools/data/multimodal_test/chapter-0{1,2,3}.pdf`。T2.5 gold set 的 10-20 题即从主课件入库后的 chunk 生成（中文/图文/跨章题天然齐备）。
