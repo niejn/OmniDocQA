@@ -384,6 +384,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 7 | `scripts/ingest_multimodal_pdf.py` | 六步编排 CLI(§16) + `--book/--chapter-start`: 匹配文件**自然排序**(§14.1-6)分配 chapter_index, metadata 写 book_id/chapter_index/chapter_label, 未指定 --book 时 book_id=文件名去扩展名 | 1-6 |
 | 8 | `tools/documents/document_service.py` + `document_api.py` | §8 契约; multimodal 路显式实例化新 backend; **filter 归一单点**(books→PG metadata 展开 doc_ids ∪ chapters → 去重并集; 显式传入但展开为空 → 422 防拼写错误静默全库); set_id → filter_json 同路径展开(filter 型)或 chunk_ids(枚举型) | 6,10 |
 | 9 | 接缝×3 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵; `rag_service.answer_question` 3 行守卫; `delete_ingested_document` 多模态分支(删点+`assets.delete_document`) | 6 |
+| 11 | `scripts/gen_multimodal_evalset.py`(T2.5) | 分层采样(书×kind)→三种出题模板(单跳/聚合/跨书, prompt 约束: 自包含无指代词+不复述答案关键句)→gold 自动记录(喂入 chunk 即 gold)→n-gram 泄漏自检(flag)→输出人工可编辑 JSON 草稿 | 6 + 现有 LLM 客户端 |
 | 10 | `tools/documents/document_repository.py` | `ensure_sets_table()`(启动幂等建表) / `create_set/list_sets/delete_set`(重名 422, chunk_ids≤500) / `aggregate_filters()`(`/documents/filters` 的 metadata 聚合: 按 book_id 分组, 章按 chapter_index 排序) / `expand_books_to_doc_ids(book_ids)`(归一用, 书不存在返回缺失清单) | PG(asyncpg 复用现有池) |
 
 ### 14.1 关键实现决策 (设计期定死, 实现期不再议)
