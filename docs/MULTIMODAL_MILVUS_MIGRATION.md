@@ -676,3 +676,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.32 | 命名定稿(用户决策): 文档库服务=document_service 族 — `tools/documents/{document_service,document_api,document_repository}.py`, 路由 `/agent/api/documents`(ask/collections/page-image/filters/sets), 前端 `/documents` 页, `document_sets` 表, `DOCUMENT_ASK_DEFAULT_TOP_K`; 否决 library(软件语境歧义)——代码未写的零成本窗口完成全局替换 |
 | v1.33 | 设计评审补全: T2.5 多模态 gold set 门禁(M4 假阳性教训, 10-20 题+R4 指标)、CLI --dry-run 成本预估+token_usage 汇总、MM-4 章节浏览与人工策展、资产 GC(二期同批)、显式不做四项附升级条件(版本/权限/格式/多轮) |
 | v1.34 | T2.5 题目生成方法定稿: LLM 起草+人工校准(gen_multimodal_evalset.py, 分层采样→逐 chunk 起草→人工 ~1h→缩编 10-20 题); gold set 五字段含 gold_chunk_ids+scope 硬断言(不经 LLM 的检索正确性判据, 直击 M4 假阳性根因); 与 R2 TestsetGenerator 分工=小集门禁 vs 大集合成 |
+| v1.35 | T2.5 题型补全: 跳数=生成时设计(喂 N chunk 即 N 跳) — 单跳(HitRate)/同章聚合(gold=集合, GoldRecall@k+MRR 测排序)/跨书比较(filter+多 gold), 配比 60/30/10; 指标纯计算不经 LLM; 真 multi-hop P2(单轮检索不支持) |
