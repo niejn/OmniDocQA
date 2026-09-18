@@ -21,7 +21,7 @@
 
 1. **第一部分(先行, 分步)**: 向量存储迁到 Milvus。1A 稠密(本期)→ 1B 稀疏 → 1C 融合(可选)。Postgres `rag_nodes` 表结构零变更。
 2. **第二部分**: 多模态 PDF 入库管线(通用解析, 不限于 SEC)→ 独立 Milvus collection; 全库查询 API。
-3. **第三部分**: 前端 `/library` 全库查询页面(通用文档 QA 入口)。
+3. **第三部分**: 前端 `/documents` 全库查询页面(通用文档 QA 入口)。
 4. **第四部分**: RAGAS 评测体系(R1 修复→R2 数据集→R3 指标→R5 模型选型→R6 组件 A/B→R7 持续评测)。
 5. **第五部分(新增)**: 通用化改造 — 前端上传 PDF 入库 + 动态 collection 管理 + 从 PDF 自动生成评测集。
 
@@ -32,7 +32,7 @@
 | 部分 | 内容 | 依赖 |
 |---|---|---|
 | 第二部分: 多模态后端 | DOTS·OCR/vLLM(+fitz 降级)入库 → 复刻参考分块 → 多模态 embedding → Milvus 新 collection; 全库查询 API | 第一部分 |
-| 第三部分: 前端 | `/library` 页 + 导航 + collection 选择 + 双模式 | 第二部分 API |
+| 第三部分: 前端 | `/documents` 页 + 导航 + collection 选择 + 双模式 | 第二部分 API |
 | 第四部分: RAGAS 评测体系重构(§6, 高优先级) | R1 修环境(阻塞 M4) → R2 数据集 LLM 增强 → R3 全量指标 → R4 专项 | R1 立即; R2 与 1B 并行 |
 | 第五部分: 通用化改造(§8.5) | 前端上传 PDF + 动态 collection + 从 PDF 自动生成评测集 | 第二/三/四部分 |
 
@@ -44,7 +44,7 @@ flowchart LR
   end
   APP[检索/问答管线<br>NodeHybridRetriever] -->|node_id + score<br>factory 选择 backend| M
   APP -->|上下文/证据/兄弟扩展<br>按 id 回表| P
-  U[前端 /library] --> LIB[/agent/api/library/*] --> M
+  U[前端 /documents] --> LIB[/agent/api/documents/*] --> M
 ```
 
 核心原则:
@@ -241,7 +241,7 @@ qdrant/opensearch 本期保持默认启动(切换前仍是现网后端); **1A �
 | `MULTIMODAL_EMBED_RPM` / `_MAX_RETRIES` / `_BACKOFF_BASE` | `120` / `5` / `2.0` | 复刻限流与退避 |
 | `MULTIMODAL_VLM_MODEL` | `qwen-vl-plus` | 图片描述, 复用 `QWEN_API_KEY` |
 | `MULTIMODAL_PAGES_DIR` | `tools/data/multimodal_pages` | 页图+插图落盘根目录 |
-| `LIBRARY_ASK_DEFAULT_TOP_K` | `8` | 全库查询默认 top_k |
+| `DOCUMENT_ASK_DEFAULT_TOP_K` | `8` | 全库查询默认 top_k |
 
 新增依赖: `dashscope`(多模态 embedding SDK)、`dots_ocr`(进 `requirements.txt` 前评审体积)。**不新增**: LangChain 全家(编排=普通函数, 分块=自实现, LLM/VLM=现有客户端, 见 §4.2 与 §3.4 依赖边界)。
 
@@ -281,13 +281,13 @@ qdrant/opensearch 本期保持默认启动(切换前仍是现网后端); **1A �
 
 即: LLM 消费图片的文字化描述, 原图只给用户看; LLM 直接看图生成(qwen-vl 类模型)为 §7 P2。
 
-### 4.3 全库查询 API(新 router `/agent/api/library`, 不动 ask_api)
+### 4.3 全库查询 API(新 router `/agent/api/documents`, 不动 ask_api)
 
 | 端点 | 契约 |
 |---|---|
-| `POST /agent/api/library/ask` | `{question: 1–1000字, collection: "text"\|"multimodal"(必填), top_k: 1–50 默认8, generate_answer: bool 默认true}` |
-| `GET /agent/api/library/collections` | `[{id, label, milvus_collection, points_count, document_count}]`(Milvus count + rag_documents), 供前端下拉 |
-| `GET /agent/api/library/page-image?document_id=&name=` | 返回 jpg; 校验解析后路径必须位于 `MULTIMODAL_PAGES_DIR/{document_id}/` 内(防穿越) |
+| `POST /agent/api/documents/ask` | `{question: 1–1000字, collection: "text"\|"multimodal"(必填), top_k: 1–50 默认8, generate_answer: bool 默认true}` |
+| `GET /agent/api/documents/collections` | `[{id, label, milvus_collection, points_count, document_count}]`(Milvus count + rag_documents), 供前端下拉 |
+| `GET /agent/api/documents/page-image?document_id=&name=` | 返回 jpg; 校验解析后路径必须位于 `MULTIMODAL_PAGES_DIR/{document_id}/` 内(防穿越) |
 
 - **multimodal 检索**: 问题 → 多模态 embedding(纯文本)→ `rag_multimodal` dense top-k, 无任何预过滤。
 - **text 全库检索**: 落 Milvus — 空过滤表达式即全库, dense+BM25 双路 → 应用层 RRF; 不做 sibling/section-tree 扩展(依赖单文档上下文); 上下文按 `CONTEXT_CHAR_BUDGET` 拼接。
@@ -297,16 +297,16 @@ qdrant/opensearch 本期保持默认启动(切换前仍是现网后端); **1A �
 
 #### 4.3.1 接口模型明细
 
-文件落点(镜像 `tools/asks/ask_api.py` 组织): `src/agent/tools/library/library_api.py`(router, prefix="/api/library")+ `library_service.py`(业务编排, 角色=简化版 rag_service, 不含 finance 路由/SQL 证据/section-tree)。
+文件落点(镜像 `tools/asks/ask_api.py` 组织): `src/agent/tools/documents/document_api.py`(router, prefix="/api/documents")+ `document_service.py`(业务编排, 角色=简化版 rag_service, 不含 finance 路由/SQL 证据/section-tree)。
 
 ```
-LibraryAskRequest:
+DocumentAskRequest:
   question: str          # 1–1000, 必填
   collection: "text" | "multimodal"   # 必填
   top_k: int = 8         # 1–50
   generate_answer: bool = true        # false = 仅检索
 
-LibraryAskResponse:
+DocumentAskResponse:
   question, collection, answer(str|null), trace_id, latency_ms
   evidence: [ {kind: "text"|"image", document_id, filename,
                title, page_no, score, text_preview,
@@ -334,7 +334,7 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 
 1. 课件 PDF 入库: `rag_documents` +1 行, `rag_multimodal` 点数 = 文本块+图片块数; 重跑同文件点数不变(幂等)。
 2. 停 DOTS·OCR + 开降级: 入库成功(纯文本块)。
-3. `curl POST /agent/api/library/ask {collection:"multimodal", question:"有界流和无界流的定义", generate_answer:true}` → 200, answer 非空, evidence 含相关页, 其 `image_url` 可 GET 到图片字节。
+3. `curl POST /agent/api/documents/ask {collection:"multimodal", question:"有界流和无界流的定义", generate_answer:true}` → 200, answer 非空, evidence 含相关页, 其 `image_url` 可 GET 到图片字节。
 4. `collection:"text"` 不传 document_ids → 200 全库命中; 同时 `/agent/api/ask/generate` 缺 document_ids 仍 422(零回归)。
 5. 单测: 维度校验失败路径、429 退避逻辑、路径穿越拒绝。
 
@@ -342,13 +342,13 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 
 ### 5.1 导航与新页面
 
-- 新建共享 Header 组件(两页复用), 链接"文档问答(`/`) / 全库查询(`/library`)" — 现为单页无导航, 需补此组件。
-- 新页面 `src/frontend/src/app/library/page.tsx`。
+- 新建共享 Header 组件(两页复用), 链接"文档问答(`/`) / 全库查询(`/documents`)" — 现为单页无导航, 需补此组件。
+- 新页面 `src/frontend/src/app/documents/page.tsx`。
 
 ### 5.1.1 隔离边界(互不干扰的硬约束)
 
-- 前端: `/library` 独立路由页面, 不 import 现有 `HomePage` 的状态逻辑; 原首页 `/` 唯一改动是挂共享 Header。
-- 后端: 新 FastAPI router `/agent/api/library`(独立文件注册到 server.py), 不 import/修改 `ask_api.py`; `/agent/api/ask/*` 契约(含 document_ids 必填)零改动。
+- 前端: `/documents` 独立路由页面, 不 import 现有 `HomePage` 的状态逻辑; 原首页 `/` 唯一改动是挂共享 Header。
+- 后端: 新 FastAPI router `/agent/api/documents`(独立文件注册到 server.py), 不 import/修改 `ask_api.py`; `/agent/api/ask/*` 契约(含 document_ids 必填)零改动。
 - 语义: "全库查询" = **选定单个 collection 内**不指定文档/分组; 跨 collection 混合排序(两库 embedding 模型与维度不同)为 §7 P2 非目标。
 
 ### 5.2 查询交互
@@ -362,9 +362,9 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 **数据流**:
 
 ```
-① 页面挂载 ──GET /library/filters──▶ 标签面 {books[{id,title,chapters[]}], kinds[]}
+① 页面挂载 ──GET /documents/filters──▶ 标签面 {books[{id,title,chapters[]}], kinds[]}
 ② 用户点选 chips ──▶ 前端状态 filters={books?,chapters?,kinds?}(或选中集合 set_id)
-③ 点[提问]/Enter ──POST /library/ask {question, collection, top_k, filters|set_id}──▶
+③ 点[提问]/Enter ──POST /documents/ask {question, collection, top_k, filters|set_id}──▶
 ④ 后端 filters → Milvus 标量表达式下推(检索热路径不碰 PG) ──▶ evidence 仅含 filter 范围内 chunk
 ⑤ 激活 filter 数量 Badge("筛选 2") + [清除全部]; 空结果时提示"当前筛选范围内无命中, 试试放宽"
 ```
@@ -375,7 +375,7 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 |---|---|
 | 全量常驻(2026-09-15 修正, 否决级联) | **书与章始终全部可见可选, 无"先选书才展章"门槛** — 按章筛是独立诉求(例: 只要某几章, 不限书); 形态 = 按书分组的折叠面板(默认全展开, 章多时区内滚动+搜索框过滤标签名); 选中书**不约束**其章 — 二者独立勾选 |
 | kind | 筛选面板 kind(全部/文本/图片)是**检索前下推**(改检索本身); 与结果区过滤 chips(§5.3, 显示层)并存且视觉区分 — 面板放检索区上方, 结果 chips 在证据区标题行 |
-| 归一语义 | 书/章勾选原样随请求下发(books/chapters), **后端 library_service 单点归一**为 document_id 并集(选书=该书全部章; 选章=单个 doc; 去重) → `document_id in [...] and kind in [...]`, 无书章交集陷阱(选书A+书B第c章 = A全部 ∪ B.c章)。归一放后端: filter 型集合动态跟随需同一展开逻辑(§6.2), 单点可测 |
+| 归一语义 | 书/章勾选原样随请求下发(books/chapters), **后端 document_service 单点归一**为 document_id 并集(选书=该书全部章; 选章=单个 doc; 去重) → `document_id in [...] and kind in [...]`, 无书章交集陷阱(选书A+书B第c章 = A全部 ∪ B.c章)。归一放后端: filter 型集合动态跟随需同一展开逻辑(§6.2), 单点可测 |
 | 触发时机 | filter 变更**不自动重查**(避免连点打爆), 下次[提问]生效; 若已有结果, 面板显示"筛选已变更, 重新提问生效"提示条 |
 | 集合 | "保存为集合"按钮(当前 filter 组合命名保存) → "自定义集合"下拉(含 chunk 计数/失效数); 选中集合 = set_id 检索(面板其余 chips 置灰禁用, 二选一语义) |
 | 持久化 | filters/选中集合/collection 记 localStorage, 刷新恢复; URL 参数化(可分享筛选链接)为 P2 |
@@ -384,22 +384,22 @@ page-image 端点: 解析为 `MULTIMODAL_PAGES_DIR/{document_id}/{name}`, `Path.
 ### 5.2.1 组件树与线框
 
 ```
-app/library/page.tsx             # "use client", 页面骨架 + 状态机 idle→loading→result|error
-components/LibraryControls.tsx   # collection 下拉 + 模式开关 + top_k
+app/documents/page.tsx             # "use client", 页面骨架 + 状态机 idle→loading→result|error
+components/DocumentControls.tsx   # collection 下拉 + 模式开关 + top_k
 components/FilterBar.tsx         # 标签筛选器: 书/章级联 chips + kind 分段 + 集合下拉 + 保存为集合 + 清除全部
 components/EvidenceCard.tsx      # text/image 两种变体(image 变体含 <img> 懒加载缩略图 + 勾选框入集合)
 components/SaveSetDialog.tsx     # 命名保存集合(新名/选已有枚举集合)
 components/Header.tsx            # 共享导航(原首页唯一改动点)
-lib/api.ts                       # +libraryAsk(filters/set_id) +fetchLibraryFilters() +sets CRUD
+lib/api.ts                       # +documentAsk(filters/set_id) +fetchDocumentFilters() +sets CRUD
 ```
 
 行为: collection 下拉数据来自 /collections, `available=false` 选项置灰标"(未初始化)"; 默认选第一个可用库并记 localStorage; Enter 提交、提交中禁用; 结果整体替换, v1 无历史记录/多轮会话; filters 状态同记 localStorage(挂载时对照最新标签面清洗失效项)。
 
 ```
 ┌────────────────────────────────────────────────┐
-│ RAGAS·Finance        [文档问答] [全库查询 ●]     │ ← Header
+│ RAGAS·Finance        [文档问答] [文档库查询 ●]     │ ← Header
 ├────────────────────────────────────────────────┤
-│ 检索库 [多模态库 ▼]  (生成答案|仅检索)   topK[8] │ ← LibraryControls
+│ 检索库 [多模态库 ▼]  (生成答案|仅检索)   topK[8] │ ← DocumentControls
 │ 筛选 [全部|文本|图片]  自定义集合[无 ▼] [存为集合]│ ← FilterBar(激活时 Badge"筛选 2" [清除])
 │ ▾ Flink指南        [全书✓] 第1章☐ 第3章☑ 第4章☐ │ ← 书=全书快捷勾选; 章独立勾选
 │ ▾ Kafka精讲        [全书✓] 第2章☐ 第5章☐        │ ← 全部书常驻可选(折叠+搜索)
@@ -410,7 +410,7 @@ lib/api.ts                       # +libraryAsk(filters/set_id) +fetchLibraryFilt
 │ │ 无界流是持续生成的数据流… [Flink概念:p3]      │ │ ← 仅 generate_answer=true
 │ ├─ 证据 (N) [全部|文本|图片] ← 显示层过滤 ──────┤ │
 │ │ [text] 第一章Flink概述►运行模型   score .83 ☑│ │ ← ☑ 勾选入集合
-│ │ [image][缩略图] 图1-2 数据流  p3   score .81 │ │ ← /api/library/page-image
+│ │ [image][缩略图] 图1-2 数据流  p3   score .81 │ │ ← /api/documents/page-image
 │ └────────────────────────────────────────────────│ │ 勾选后底部浮条: [加入集合 ▼]
 └────────────────────────────────────────────────┘
 ```
@@ -426,11 +426,11 @@ lib/api.ts                       # +libraryAsk(filters/set_id) +fetchLibraryFilt
 
 ### 5.4 新代理路由(同 `route.ts` 模式, `BACKEND_API_BASE_URL`)
 
-`/api/library/ask`、`/api/library/collections`、`/api/library/page-image`(流式透传字节, 透传 content-type; 图片文件名 md5/页号不可变, 响应加 `Cache-Control: max-age` 便于浏览器复用缓存)。
+`/api/documents/ask`、`/api/documents/collections`、`/api/documents/page-image`(流式透传字节, 透传 content-type; 图片文件名 md5/页号不可变, 响应加 `Cache-Control: max-age` 便于浏览器复用缓存)。
 
 ### 5.5 第三部分验收标准(浏览器实测)
 
-1. Header 两页互切; `/library` 选 multimodal 提问 → 答案卡+图文证据卡渲染, 缩略图可见。
+1. Header 两页互切; `/documents` 选 multimodal 提问 → 答案卡+图文证据卡渲染, 缩略图可见。
 2. 切 `collection=text` → 文本证据卡; "仅检索"模式无答案卡。
 3. 过滤 chips 计数正确(全部/文本/图片)且切换过滤生效。
 4. 图片加载失败(onError)显示占位与重试; 后端停机 → 友好错误提示。
@@ -545,11 +545,11 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 
 | 端点 | 契约 |
 |---|---|
-| `POST /agent/api/library/upload` | multipart/form-data: `{file: <pdf>}` → 后端调第二部分入库管线(fitz 或 DOTS·OCR)→ 返回 `{document_id, status, node_count, page_count}` |
-| `GET /agent/api/library/documents` | 列出所有已入库文档(collection 过滤, 含状态/页数/块数) |
-| `DELETE /agent/api/library/documents/{id}` | 删除文档(级联 Milvus + PG + 磁盘页图) |
+| `POST /agent/api/documents/upload` | multipart/form-data: `{file: <pdf>}` → 后端调第二部分入库管线(fitz 或 DOTS·OCR)→ 返回 `{document_id, status, node_count, page_count}` |
+| `GET /agent/api/documents/documents` | 列出所有已入库文档(collection 过滤, 含状态/页数/块数) |
+| `DELETE /agent/api/documents/documents/{id}` | 删除文档(级联 Milvus + PG + 磁盘页图) |
 
-前端 `/library` 页增加:
+前端 `/documents` 页增加:
 - "上传 PDF" 按钮(drag & drop / file picker), 显示上传进度+入库状态
 - 已入库文档列表(卡片, 含标题/页数/状态/删除按钮)
 - 上传完成后可立即提问(该文档已在 collection 中可检索)
@@ -561,9 +561,9 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | 能力 | 设计 |
 |---|---|
 | 按域分 collection | 用户可选 collection(如 `finance` / `books` / `manuals`), 每个 collection 独立 schema+embedding 模型 |
-| API | `POST /agent/api/library/collections` `{name, embedding_provider, description}` → 创建 |
-| 切换 | `/library` 页 collection 下拉从硬编码改为动态获取(现有 `GET /collections` 改为查库) |
-| 隔离 | finance 管线(`rag_nodes`)不受影响; 新 collection 走 `/agent/api/library/*` 通用路径 |
+| API | `POST /agent/api/documents/collections` `{name, embedding_provider, description}` → 创建 |
+| 切换 | `/documents` 页 collection 下拉从硬编码改为动态获取(现有 `GET /collections` 改为查库) |
+| 隔离 | finance 管线(`rag_nodes`)不受影响; 新 collection 走 `/agent/api/documents/*` 通用路径 |
 
 ### 8.5.4 从 PDF 自动生成评测集(打通 R2 与第五部分)
 
@@ -581,16 +581,16 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 
 | 端点 | 契约 |
 |---|---|
-| `POST /agent/api/library/generate-testset` | `{collection, testset_size: 10-100}` → 异步生成, 返回 job_id |
-| `GET /agent/api/library/testset/{job_id}` | 轮询状态 → 完成后返回题目列表(JSON) |
-| `POST /agent/api/library/evaluate` | `{collection, testset_path}` → 异步执行评测(R3 指标) → 返回报告 |
+| `POST /agent/api/documents/generate-testset` | `{collection, testset_size: 10-100}` → 异步生成, 返回 job_id |
+| `GET /agent/api/documents/testset/{job_id}` | 轮询状态 → 完成后返回题目列表(JSON) |
+| `POST /agent/api/documents/evaluate` | `{collection, testset_path}` → 异步执行评测(R3 指标) → 返回报告 |
 
 ### 8.5.5 与其他部分的关系
 
 | 部分 | 关系 |
 |---|---|
 | 第二部分(PDF 入库管线) | 第五部分的入库引擎 = 第二部分的管线, 增加通用化参数(不自 SEC 元数据) |
-| 第三部分(前端 /library) | 第五部分的 UI 基座 = 第三部分的页面, 增加上传/文档管理/评测面板 |
+| 第三部分(前端 /documents) | 第五部分的 UI 基座 = 第三部分的页面, 增加上传/文档管理/评测面板 |
 | 第四部分 R2(TestsetGenerator) | 第五部分的评测题生成 = R2 的 TestsetGenerator, 增加按 collection 触发 |
 | 第四部分 R3(全量指标) | 第五部分的质量报告 = R3 的指标体系 |
 | 第四部分 R5/R6/R7 | 通用化后选型能力适用于任何文档类型(不只 SEC) |
@@ -611,14 +611,14 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | 2026-09-09 | OCR 采用"配置化 vLLM + fitz 降级" | 否决"仅 fitz"(丢失多模态意义)、"仅 vLLM"(无 GPU 时不可入库) |
 | 2026-09-09 | 向量化粒度完全复刻参考项目(标题+语义分块+图片单独向量化) | 否决"页级"(实现简单但召回粒度粗) |
 | 2026-09-09 | 查询双模式: `generate_answer` 开关 | — |
-| 2026-09-09 | 前端新增独立页面 `/library` + 共享 Header | 否决"同页模式切换" |
+| 2026-09-09 | 前端新增独立页面 `/documents` + 共享 Header | 否决"同页模式切换" |
 | 2026-09-09 | Postgres `rag_nodes` 表结构零变更, 不删 text/title/metadata/search_vector | 否决 v1.1 "PG 瘦身"(用户决策; PG 保持事实源, 迁移风险大幅下降) |
 | 2026-09-09 | M3 采用配置开关灰度切换(非一次性切换) | 保留回滚窗口至 M5 |
 | 2026-09-09 | 采用扩展协议 `SupportsHybridSearch` + `FUSION_BACKEND` 开关, 随本期实现但默认关闭, M6 门禁后启用 | 否决"删除 factory 直连 Milvus"(失去灰度回滚/写路径统一/单变量评测); 否决"融合一次到位"(迁移评测无法单变量归因) |
 | 2026-09-09 | 多模态 collection 存 Milvus(原 v1.0 为 Qdrant, 因第一部分迁移而改) | 与参考项目一致, 免二次迁移 |
 | 2026-09-09 | evidence 单一混排列表(按融合分数降序), 卡片按 kind 分支 + 过滤 chips | 否决"文本/图片分区显示"(丢失相关性排序) |
 | 2026-09-09 | 生成答案用纯文本 context: 图片 = 入库时 VLM 预生成描述, LLM 不看原图; 原图仅前端证据展示 | VLM 看图生成为 P2(成本/复杂度高) |
-| 2026-09-09 | `/library` 页面与 `/agent/api/library` router 同现有首页/ask 完全隔离(互不 import) | 落实"互不干扰"硬约束, 见 §5.1.1 |
+| 2026-09-09 | `/documents` 页面与 `/agent/api/documents` router 同现有首页/ask 完全隔离(互不 import) | 落实"互不干扰"硬约束, 见 §5.1.1 |
 | 2026-09-09 | 第一部分分步: 1A 仅稠密 Qdrant→Milvus, 稀疏留 PG; schema 一次建全(text+BM25 随 1A 写入) | 单变量评测更干净; 避免 Milvus schema 不可变导致二次迁移 |
 | 2026-09-09 | compose 加入 Milvus v2.6.22 三容器(版本取官方 standalone compose), qdrant/opensearch 保持默认启动直至各自切换验收 | 切换前旧后端仍现网在用 |
 | 2026-09-09 | 读 PDF 全链路不引入 LangChain: 解析=纯 dots_ocr, 编排=普通函数(不借鉴 LangGraph), LLM/VLM=现有 OpenAI 兼容客户端, 分块=自实现(标题 60 行+语义断点 100 行+层级传播 40 行) | 参考 LangChain 仅为课程技术栈; 引入将拖 langchain-core 依赖树违背单一惯例; `langchain-text-splitters` 仅作对齐失败兜底 |
@@ -668,8 +668,9 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.25 | VLM 备选链实测补全: glm-5.3 仅文本(生成模型看不了图)、glm-5.3-flash 原生多模态可用(thinking 不可禁)、glm-4v-flash 免费档可用(读图内文字准确)、4.5v/4v-plus 需充值; 默认维持 doubao-seed-2-0-lite(可禁 thinking+RPM 30000 批量最优) |
 | v1.26 | GLM Coding Plan 端点记录(anthropic/coding-chat/response/标准四端点总表 §4.5); 实测判定 ZHIPU_API_KEY 为 Coding Plan 订阅(glm-5.3-flash 视觉在 coding 端点订阅内可用, 标准端点按量 429) → glm-5.3-flash 双订阅通道; `ZHIPU_BASE_URL` 入 config/.env/env.example |
 | v1.27 | 系统设计补全(PART2_DESIGN §19-24): 服务拓扑/collection 全景/数据流、删除级联矩阵与并发防护(先 Milvus 后 PG 后资产, 最终一致)、回滚预案(零改动边界=文本链天然免回滚)、可观测(log_rag/langfuse/m4 门禁)、密钥矩阵与上传安全、需求追踪矩阵 |
-| v1.28 | 书籍层级与集合需求(用户): ①Book→Chapter(=PDF)→Chunk 层级, 同 `--book` 多章节 PDF 自动聚合, Milvus 加 book_id/chapter_label 标量 filter 下推, `/library/filters` 聚合端点; ②前端启动拉 filter 标签 + 动态圈选保存自定义集合(PG 新表 `library_sets`, filter 型/枚举型) + chunk 勾选入集合; ask 扩 filters/set_id 参数(PART2_DESIGN §6.1/6.2/§8) |
+| v1.28 | 书籍层级与集合需求(用户): ①Book→Chapter(=PDF)→Chunk 层级, 同 `--book` 多章节 PDF 自动聚合, Milvus 加 book_id/chapter_label 标量 filter 下推, `/documents/filters` 聚合端点; ②前端启动拉 filter 标签 + 动态圈选保存自定义集合(PG 新表 `document_sets`, filter 型/枚举型) + chunk 勾选入集合; ask 扩 filters/set_id 参数(PART2_DESIGN §6.1/6.2/§8) |
 | v1.29 | 前端标签筛选器交互定稿(§5.2.0): 挂载拉 /filters 标签面 → 书/章级联 chips 多选(选中书才展开章) → kind 检索前下推(与结果区显示层过滤区分) → 点提问才生效(不自动重查, 变更提示条) → 集合下拉/存为集合/勾选入集合; 线框与组件树更新(FilterBar/SaveSetDialog/勾选浮条); localStorage 持久化+失效清洗; 组件树/线框同步 |
 | v1.30 | Bocha 远程 reranker 移除(见 2026-09-16 决策): rerank 仅本地 CrossEncoder, CompositeReranker 级联简化为工厂直选 |
 | v1.30 | 修正 filter 语义与交互: 否决"选书才展章"级联(按章筛是独立诉求) → 书/章全量常驻可选(折叠面板+搜索); books/chapters 归一为 document_id **并集**下推(单表达式 `document_id in [...] and kind in [...]`), 消除书章交集陷阱(选书A+选书B的章=并集而非空集); book_id/chapter_label 降级为 evidence 冗余展示字段(零回查 PG) |
-| v1.31 | 详细设计定稿: 归一实现位置修正(前端→后端 library_service 单点, 保 filter 集合动态跟随); 蓝图签名对齐(book/chapter 字段/search expr 构造/MmHit 扩展/repository 四方法); 实现决策补 6-8(自然排序算法/chapter_label 生成/MmHit 字段); 错误矩阵+测试计划扩充(归一 422/set 404/超限/重名); §11.1 任务级 WBS(MM-1×5/MM-2×4/MM-3×3, 估时+依赖+验证映射) |
+| v1.31 | 详细设计定稿: 归一实现位置修正(前端→后端 document_service 单点, 保 filter 集合动态跟随); 蓝图签名对齐(book/chapter 字段/search expr 构造/MmHit 扩展/repository 四方法); 实现决策补 6-8(自然排序算法/chapter_label 生成/MmHit 字段); 错误矩阵+测试计划扩充(归一 422/set 404/超限/重名); §11.1 任务级 WBS(MM-1×5/MM-2×4/MM-3×3, 估时+依赖+验证映射) |
+| v1.32 | 命名定稿(用户决策): 文档库服务=document_service 族 — `tools/documents/{document_service,document_api,document_repository}.py`, 路由 `/agent/api/documents`(ask/collections/page-image/filters/sets), 前端 `/documents` 页, `document_sets` 表, `DOCUMENT_ASK_DEFAULT_TOP_K`; 否决 library(软件语境歧义)——代码未写的零成本窗口完成全局替换 |

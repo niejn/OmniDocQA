@@ -51,7 +51,7 @@
   text块  → multimodal embedding({text})
   → Milvus rag_multimodal (PK=块UUID) + rag_documents 登记 + 页图/插图落盘
 
-查询(/agent/api/library, 新 router, 不动 ask_api):
+查询(/agent/api/documents, 新 router, 不动 ask_api):
   collection=multimodal: 问题 → 多模态 embedding(纯文本) → rag_multimodal dense top-k
                         → generate_answer ? DEFAULT_MODEL(上下文=文字) : 直接返回
   collection=text:      现有文本向量 → rag_nodes dense+BM25 全库 → 应用层 RRF → (可选 rerank)
@@ -102,14 +102,14 @@ if backend == "milvus_multimodal":
 
 ```python
 if config.dense_backend == "milvus_multimodal":
-    raise ValueError("DENSE_BACKEND=milvus_multimodal 仅服务 /agent/api/library; /ask 请用 DENSE_BACKEND=milvus")
+    raise ValueError("DENSE_BACKEND=milvus_multimodal 仅服务 /agent/api/documents; /ask 请用 DENSE_BACKEND=milvus")
 ```
 
 这是新增防御分支, 不触碰任何密集向量逻辑; 启动期即可在 server 日志 warn 一次。`/ask` 契约(含 document_ids 必填)零变化 — 默认模式下该分支永不触发。
 
-### 4.4 library 路的实例化
+### 4.4 document 路的实例化
 
-`tools/library/library_service.py` **显式实例化** `MilvusMultimodalDenseBackend()`(collection=multimodal 时), 不经全局 `get_dense_backend()` — 全局 env 切换是"实验/演示整站多模态"用; `/library` 自身按请求参数选库, 与全局 DENSE_BACKEND 解耦。两条使用路径互不干扰。
+`tools/documents/document_service.py` **显式实例化** `MilvusMultimodalDenseBackend()`(collection=multimodal 时), 不经全局 `get_dense_backend()` — 全局 env 切换是"实验/演示整站多模态"用; `/documents` 自身按请求参数选库, 与全局 DENSE_BACKEND 解耦。两条使用路径互不干扰。
 
 ### 4.5 GLM 接入端点总表 (2026-09-15 记录, 用户提供的 Coding Plan 官方端点 + 实测)
 
@@ -157,7 +157,7 @@ MULTIMODAL_DESCRIBE_MODE=vlm            # vlm(默认, 基础层+VLM 增强) | co
 MULTIMODAL_ASSET_STORE=local             # local(一期默认) | minio(二期)
 MULTIMODAL_COLLECTION=rag_multimodal
 MULTIMODAL_PAGES_DIR=tools/data/multimodal_pages   # local 模式根目录; minio 模式忽略
-LIBRARY_ASK_DEFAULT_TOP_K=8
+DOCUMENT_ASK_DEFAULT_TOP_K=8
 
 # --- 切换 (§4) ---
 DENSE_BACKEND=milvus                  # milvus(默认,零改动) | milvus_multimodal(新)
@@ -191,7 +191,7 @@ v1 检索仅 dense; sparse 字段为 §7 P2 预留(与 rag_nodes 的 text 加权
 ### 6.1 书籍层级模型与 metadata filter (2026-09-15 需求扩展)
 
 ```
-Library(全库) ─ Book(逻辑书, book_id) ─ Chapter(章 = 一个 PDF = document_id) ─ Chunk(text|image)
+Documents(全库) ─ Book(逻辑书, book_id) ─ Chapter(章 = 一个 PDF = document_id) ─ Chunk(text|image)
 ```
 
 **自动合并语义**: 同一次 CLI 调用 + 同 `--book` 值 = 一本书; 章节 = 匹配文件按**文件名自然排序**编号 1..N; 不做文件名启发式猜书(脆、易错聚合)。未指定 `--book` 的 PDF = 独立文档(自成一书, book_id=文件名去扩展名)。
@@ -199,15 +199,15 @@ Library(全库) ─ Book(逻辑书, book_id) ─ Chapter(章 = 一个 PDF = docu
 | 存储 | 承载 |
 |---|---|
 | Milvus `book_id`/`chapter_label` 标量字段(索引) | **filter 表达式统一走 document_id 归一并集**(2026-09-15 修正): 后端将 books+chapters 归一为 document_id **去重并集** → `document_id in [...] and kind in [...]` — 消除书章交集陷阱(选书A+选书B的章 = A全部 ∪ B该章); `book_id`/`chapter_label` 字段保留为**冗余展示字段**(evidence 卡直接从命中点读书名/章名, 零回查 PG) |
-| PG `rag_documents.metadata` 追加 `{book_id, chapter_index, chapter_label}` | 事实源; `/library/filters` 聚合数据源。**层级关系用 metadata 不建表的理由**(2026-09-15 决策): 书当前无独立属性(仅分组标签, 全部需求在读路径)、零 schema 变更、删除无孤儿行; 引用完整性由 CLI 写入时 trim 规范化 book_id 保证。**升级 `library_books` 表的触发条件**(任一出现即建表, metadata 保留冗余做 Milvus 下推): ①书需独立属性(作者/封面/权限) ②重命名成高频操作 ③书过百本且 /filters 聚合变慢 ④第五部分动态 collection 落地。对照: 用户集合(§6.2)跨文档+chunk 级+CRUD 生命周期+唯一名约束, 故必须建表 — 两者的分界 = 分组标签 vs 一等实体 |
+| PG `rag_documents.metadata` 追加 `{book_id, chapter_index, chapter_label}` | 事实源; `/documents/filters` 聚合数据源。**层级关系用 metadata 不建表的理由**(2026-09-15 决策): 书当前无独立属性(仅分组标签, 全部需求在读路径)、零 schema 变更、删除无孤儿行; 引用完整性由 CLI 写入时 trim 规范化 book_id 保证。**升级 `document_books` 表的触发条件**(任一出现即建表, metadata 保留冗余做 Milvus 下推): ①书需独立属性(作者/封面/权限) ②重命名成高频操作 ③书过百本且 /filters 聚合变慢 ④第五部分动态 collection 落地。对照: 用户集合(§6.2)跨文档+chunk 级+CRUD 生命周期+唯一名约束, 故必须建表 — 两者的分界 = 分组标签 vs 一等实体 |
 | 检索执行路径 | **filter 下推 Milvus 标量字段**(书/章/kind/筛选集合 → `expr` 与向量搜索一次完成, 归属关系写入时已物化到每个 chunk 点上, 检索零 join); 枚举集合 = PK 列表下推(`id in [...]`, ≤500); **否决"PG 倒查 chunk id 集合再查"** — 表达式爆炸(一书几千 id)+热路径多一跳 PG+把引擎原生标量过滤搬到应用层 |
 
-### 6.2 用户自定义集合 (PG 新表 `library_sets`, 多模态域专用, 不碰现有表)
+### 6.2 用户自定义集合 (PG 新表 `document_sets`, 多模态域专用, 不碰现有表)
 
 前端动态 filter 圈选或搜索结果手动勾选 chunk → 保存为命名集合 → 集合成为可检索单位("选集/书架"模式):
 
 ```sql
-CREATE TABLE library_sets (
+CREATE TABLE document_sets (
   set_id      TEXT PRIMARY KEY,            -- uuid
   name        TEXT NOT NULL UNIQUE,
   kind        TEXT NOT NULL,               -- 'filter'(动态) | 'enumerated'(静态勾选)
@@ -239,7 +239,7 @@ class MultimodalAssetStore(Protocol):
 
 **关键不变量**: Milvus `image_ref` 与 API 契约中的 `image_url` 参数只出现 **asset key**, 永不出现绝对路径/presigned URL。因此 一期→二期 迁移 = 换 env + 数据搬迁脚本, **Milvus 点数据零迁移、API 契约零改动、前端零改动**。
 
-二期(`/library/page-image` 行为不变, 后端从 MinIO 流式代理; presigned URL 直连为后续优化):
+二期(`/documents/page-image` 行为不变, 后端从 MinIO 流式代理; presigned URL 直连为后续优化):
 
 ```
 MULTIMODAL_ASSET_STORE=minio
@@ -271,31 +271,31 @@ MULTIMODAL_PAGES_DIR/
 5. **存储**: `MilvusMultimodalDenseBackend.upsert_document_nodes()`(含 collection 首建/维度校验) + `rag_documents` 登记 + 落盘。幂等: 先 `document_id==X` 删点再全量写。
 6. **可观测**: `log_rag` 各 stage; 失败页/失败块清单 + 截断标记(`text_truncated: true`)。
 
-## 8. 查询 API (`/agent/api/library`)
+## 8. 查询 API (`/agent/api/documents`)
 
 v1 §4.3 契约沿用(ask/collections/page-image 三端点、请求响应模型、错误契约 422/404/502、路径穿越防护), 修正与扩展:
 
-- **multimodal 检索改走 `MilvusMultimodalDenseBackend.search()`**(§4.4 显式实例化), 不再是"library_service 内联调用 embedding+Milvus" — 后端化统一了删除工具/factory/维度校验的复用面。
-- **ask 请求扩展**(2026-09-15 需求, 仅 multimodal 路; text 路忽略并告警): `filters: {books?: string[], chapters?: string[](=document_id), kinds?: ("text"|"image")[]}` 与 `set_id?: string` **二选一**(同传 422); 均省略 = 全库(现状)。**语义(同日修正)**: books/chapters 独立维度 — 归一为 document_id **并集去重**后 `and kind in [...]` 单表达式下推, 无书章交集陷阱。**归一在后端 `library_service` 单点实现**(v1.30 原写前端归一, 修正理由: filter 型集合的动态跟随依赖后端按 filter_json 展开 books→doc_ids, 两处归一不如一处; 前端只透传勾选状态, 逻辑单点可测)。set_id → §6.2 展开。evidence 不变(MmHit 增 book_id/chapter_label 直显)。
-- **新端点 `GET /agent/api/library/filters`**: 页面初始化拉取可用 filter 标签面 — 从 `rag_documents.metadata` 聚合: `{books: [{book_id, title, chapter_count, chunk_count?, chapters: [{document_id, chapter_index, chapter_label, filename, pages, chunks}]}], kinds: ["text","image"]}`(chunk_count 惰性: 书量大时按需)。前端据此渲染级联筛选器。
-- **新端点 集合 CRUD**(§6.2): `POST /library/sets {name, filter?|chunk_ids?}`(二选一, chunk_ids ≤500) / `GET /library/sets`(含 chunk 失效计数) / `DELETE /library/sets/{set_id}`。重名 422; 集合检索直接走 ask 的 set_id。
+- **multimodal 检索改走 `MilvusMultimodalDenseBackend.search()`**(§4.4 显式实例化), 不再是"document_service 内联调用 embedding+Milvus" — 后端化统一了删除工具/factory/维度校验的复用面。
+- **ask 请求扩展**(2026-09-15 需求, 仅 multimodal 路; text 路忽略并告警): `filters: {books?: string[], chapters?: string[](=document_id), kinds?: ("text"|"image")[]}` 与 `set_id?: string` **二选一**(同传 422); 均省略 = 全库(现状)。**语义(同日修正)**: books/chapters 独立维度 — 归一为 document_id **并集去重**后 `and kind in [...]` 单表达式下推, 无书章交集陷阱。**归一在后端 `document_service` 单点实现**(v1.30 原写前端归一, 修正理由: filter 型集合的动态跟随依赖后端按 filter_json 展开 books→doc_ids, 两处归一不如一处; 前端只透传勾选状态, 逻辑单点可测)。set_id → §6.2 展开。evidence 不变(MmHit 增 book_id/chapter_label 直显)。
+- **新端点 `GET /agent/api/documents/filters`**: 页面初始化拉取可用 filter 标签面 — 从 `rag_documents.metadata` 聚合: `{books: [{book_id, title, chapter_count, chunk_count?, chapters: [{document_id, chapter_index, chapter_label, filename, pages, chunks}]}], kinds: ["text","image"]}`(chunk_count 惰性: 书量大时按需)。前端据此渲染级联筛选器。
+- **新端点 集合 CRUD**(§6.2): `POST /documents/sets {name, filter?|chunk_ids?}`(二选一, chunk_ids ≤500) / `GET /documents/sets`(含 chunk 失效计数) / `DELETE /documents/sets/{set_id}`。重名 422; 集合检索直接走 ask 的 set_id。
 - 其余(text 路 RRF、rerank 复用、CONTEXT_CHAR_BUDGET、generate_answer 语义、证据 `[文件名:p页]`)不变。
 
 ## 9. 非功能需求 (v1 §4.4 全部沿用)
 
 维度 fail-fast / 密钥仅 env / 长文本截断标记 / Windows 路径 / dpi=200 磁盘占用注明。补充:
 - **零改动回归门禁**: 部署后默认 env 下跑现有 70 单测 + `/ask` 冒烟一例, 证明文本链路无感。
-- **vLLM 服务不可达**: 入库自动降级 + `/library` multimodal 检索不受影响(检索不依赖解析服务)。
+- **vLLM 服务不可达**: 入库自动降级 + `/documents` multimodal 检索不受影响(检索不依赖解析服务)。
 
 ## 10. 验收标准
 
 1. **零改动**: `git diff` 中 `vectorizer.py`/`dense_milvus.py`/`ask_api.py`/`rag_nodes` 相关 = 0 行改动; 70 存量单测全绿。
-2. **env 切换**: `DENSE_BACKEND=milvus` 一切如旧; `=milvus_multimodal` 时 factory 返回新后端, `/ask` 得到清晰 ValueError, `/library` 正常。
+2. **env 切换**: `DENSE_BACKEND=milvus` 一切如旧; `=milvus_multimodal` 时 factory 返回新后端, `/ask` 得到清晰 ValueError, `/documents` 正常。
 3. **混配 fail-fast**: `milvus_multimodal` + `sparse=milvus` 启动即报错(新单测覆盖)。
 4. **入库**: 课件 PDF → `rag_documents` +1, `rag_multimodal` 点数=文本块+图片块; 重跑幂等; 停 DOTS·OCR 降级入库成功。
-5. **查询**: `POST /agent/api/library/ask {collection:"multimodal", question:"有界流和无界流的定义"}` → 200, answer 非空, evidence 相关页 `image_url` 可 GET 到字节。
+5. **查询**: `POST /agent/api/documents/ask {collection:"multimodal", question:"有界流和无界流的定义"}` → 200, answer 非空, evidence 相关页 `image_url` 可 GET 到字节。
 6. **单测**(新增): 维度校验失败路径 / 429 退避 / 路径穿越拒绝 / factory 混配矩阵 / layout JSON→md 转换 / fitz 降级分支 / filter 表达式构造 / 集合展开。
-7. **书籍聚合**(§6.1): 同 `--book` 入库 3 个章节 PDF → `/library/filters` 返回 1 本书 3 章; `filters:{books:[...]}` 检索命中仅该书; `filters:{chapters:[doc_id]}` 命中仅该章。
+7. **书籍聚合**(§6.1): 同 `--book` 入库 3 个章节 PDF → `/documents/filters` 返回 1 本书 3 章; `filters:{books:[...]}` 检索命中仅该书; `filters:{chapters:[doc_id]}` 命中仅该章。
 8. **自定义集合**(§6.2): 前端圈选 filter 保存集合 → `set_id` 检索结果 ⊆ 集合范围; 勾选 chunk 保存枚举集合 → 检索恰含所选; 删除集合后 set_id 检索 404; chunk_ids>500 → 422。
 9. **零改动不变**: filter/集合全部能力不影响 `/ask` 与 text 路(text 路传 filters → 忽略+告警日志, 契约不报错)。
 
@@ -304,8 +304,8 @@ v1 §4.3 契约沿用(ask/collections/page-image 三端点、请求响应模型�
 | 阶段 | 内容 | 交付物 |
 |---|---|---|
 | **MM-1 解析+入库** | `dots_ocr_client.py` + 分块 + `multimodal_vectorizer.py` + `dense_milvus_multimodal.py`(schema 含 book_id/chapter_label) + `multimodal_asset_store.py`(抽象+local 实现) + CLI(`--book`/`--chapter-start` 聚合) | 真 PDF 入库(含多章节书), 验收 1/3/4/7 入库面 |
-| **MM-2 检索 API** | `library_api.py` + `library_service.py`(filters/set_id 下推) + `GET /library/filters` 聚合 + PG `library_sets` 表 + 集合 CRUD + `SPARSE_BACKEND=none` + ask 守卫 | 验收 2/5/6/7 检索面/8 |
-| **MM-3 前端** | 第三部分 `/library` 页 + 书籍/章节级联筛选器(启动拉 /filters) + 证据卡"加入集合"勾选 + 集合管理下拉(见迁移文档 §5) | 验收 5/7/8 的 UI 面 |
+| **MM-2 检索 API** | `document_api.py` + `document_service.py`(filters/set_id 下推) + `GET /documents/filters` 聚合 + PG `document_sets` 表 + 集合 CRUD + `SPARSE_BACKEND=none` + ask 守卫 | 验收 2/5/6/7 检索面/8 |
+| **MM-3 前端** | 第三部分 `/documents` 页 + 书籍/章节级联筛选器(启动拉 /filters) + 证据卡"加入集合"勾选 + 集合管理下拉(见迁移文档 §5) | 验收 5/7/8 的 UI 面 |
 | **二期 MinIO 资产迁移** | `MinioAssetStore` + `scripts/multimodal_assets_migrate.py` + compose `rag-minio`; env 切 `MULTIMODAL_ASSET_STORE=minio` | 图片字节抽样校验全等, API/前端零改动 |
 
 MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收后独立排期(asset store 接口已定型, 迁移成本=实现类+搬迁脚本)。
@@ -326,16 +326,16 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 
 | 任务 | 内容 | 验证 | 依赖 |
 |---|---|---|---|
-| T2.1 集合与标签仓储 | `library_repository.py`(sets 表/aggregate_filters/expand_books) | 单测(repository 行) | MM-1 的 PG 池复用 |
+| T2.1 集合与标签仓储 | `document_repository.py`(sets 表/aggregate_filters/expand_books) | 单测(repository 行) | MM-1 的 PG 池复用 |
 | T2.2 切换与守卫 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵 + ask 守卫 | 单测(factory 矩阵) + 70 存量回归 | T1.4 |
-| T2.3 服务与路由 | `library_service.py`(归一单点/set 展开) + `library_api.py`(ask/collections/page-image/filters/sets) | 单测(service 全行) + curl 五端点验收(§10-5/7/8) | T2.1, T2.2 |
+| T2.3 服务与路由 | `document_service.py`(归一单点/set 展开) + `document_api.py`(ask/collections/page-image/filters/sets) | 单测(service 全行) + curl 五端点验收(§10-5/7/8) | T2.1, T2.2 |
 | T2.4 删除级联 | `delete_ingested_document` 多模态分支(点+PG+资产, §20.1 顺序) | 手工验收(删文档→检索落空/资产目录清) | T2.3 |
 
 **MM-3 前端 (估 3 天)**
 
 | 任务 | 内容 | 验证 | 依赖 |
 |---|---|---|---|
-| T3.1 页面基座 | `/library` 页 + Header + LibraryControls + collections 接入 | 浏览器: 两页互切/库切换 | MM-2 |
+| T3.1 页面基座 | `/documents` 页 + Header + DocumentControls + collections 接入 | 浏览器: 两页互切/库切换 | MM-2 |
 | T3.2 筛选器 | `FilterBar.tsx`(全量常驻折叠面板/搜索/kind/集合下拉/存为集合) + localStorage 清洗 | 浏览器: 书/章独立勾选→检索范围生效(§10-7 UI 面) | T3.1 |
 | T3.3 证据与集合策展 | EvidenceCard 勾选 + SaveSetDialog + 浮条 + 图片卡 | 浏览器: 勾选入集合→set_id 检索(§10-8 UI 面) | T3.2 |
 
@@ -361,7 +361,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 |---|---|
 | §4.1 env 表 | 扩充(§5), `SPARSE_BACKEND=none` 新增 |
 | §4.2 六步管线 | 沿用, 解析器明确为自实现 `dots_ocr_client.py`(不引 dots_ocr 包) |
-| §4.3 library API | 契约沿用, multimodal 检索改经新 DenseBackend |
+| §4.3 documents API | 契约沿用, multimodal 检索改经新 DenseBackend |
 | §4.5 验收 | 扩为 §10(增加零改动回归门禁与混配矩阵) |
 | (新增) | 零改动边界 / factory 切换与校验矩阵 / ask 守卫 / 模型支持矩阵 |
 
@@ -376,9 +376,9 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 5 | `tools/multimodal_vectorizer.py` | provider 抽象(ark 默认: httpx 直调 `/embeddings/multimodal`, data 单对象兼容, 复用 OPENAI_* env 或独立覆盖; dashscope 备选); `detect_dim()/embed_texts()/embed_image_with_text()`; RPM 窗口+429 退避+截断标记 | httpx(自带); dashscope 可选 |
 | 6 | `tools/retrieval_backends/dense_milvus_multimodal.py` | `ensure_collection()`(schema 含 book_id/chapter_label 标量+索引) / `upsert_document_nodes(document_id, chunks, *, vectorizer, assets)`(每点写入 book_id/chapter_label, chunks 带 §6.1 层级元数据) / `search(query_vector, top_k, document_ids=None, kinds=None, chunk_ids=None)` → `expr` 构造(`document_id in [...] and kind in [...]` / `id in [...]`), 返回 `MmHit{..., book_id, chapter_label}` / `replace_document_nodes()` | 5 |
 | 7 | `scripts/ingest_multimodal_pdf.py` | 六步编排 CLI(§16) + `--book/--chapter-start`: 匹配文件**自然排序**(§14.1-6)分配 chapter_index, metadata 写 book_id/chapter_index/chapter_label, 未指定 --book 时 book_id=文件名去扩展名 | 1-6 |
-| 8 | `tools/library/library_service.py` + `library_api.py` | §8 契约; multimodal 路显式实例化新 backend; **filter 归一单点**(books→PG metadata 展开 doc_ids ∪ chapters → 去重并集; 显式传入但展开为空 → 422 防拼写错误静默全库); set_id → filter_json 同路径展开(filter 型)或 chunk_ids(枚举型) | 6,10 |
+| 8 | `tools/documents/document_service.py` + `document_api.py` | §8 契约; multimodal 路显式实例化新 backend; **filter 归一单点**(books→PG metadata 展开 doc_ids ∪ chapters → 去重并集; 显式传入但展开为空 → 422 防拼写错误静默全库); set_id → filter_json 同路径展开(filter 型)或 chunk_ids(枚举型) | 6,10 |
 | 9 | 接缝×3 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵; `rag_service.answer_question` 3 行守卫; `delete_ingested_document` 多模态分支(删点+`assets.delete_document`) | 6 |
-| 10 | `tools/library/library_repository.py` | `ensure_sets_table()`(启动幂等建表) / `create_set/list_sets/delete_set`(重名 422, chunk_ids≤500) / `aggregate_filters()`(`/library/filters` 的 metadata 聚合: 按 book_id 分组, 章按 chapter_index 排序) / `expand_books_to_doc_ids(book_ids)`(归一用, 书不存在返回缺失清单) | PG(asyncpg 复用现有池) |
+| 10 | `tools/documents/document_repository.py` | `ensure_sets_table()`(启动幂等建表) / `create_set/list_sets/delete_set`(重名 422, chunk_ids≤500) / `aggregate_filters()`(`/documents/filters` 的 metadata 聚合: 按 book_id 分组, 章按 chapter_index 排序) / `expand_books_to_doc_ids(book_ids)`(归一用, 书不存在返回缺失清单) | PG(asyncpg 复用现有池) |
 
 ### 14.1 关键实现决策 (设计期定死, 实现期不再议)
 
@@ -402,13 +402,13 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 向量化 | 429 | 指数退避 5 次(120RPM 窗口内) | log |
 | 向量化 | 退避耗尽/其它异常 | 整批 fail-fast(半入库状态由幂等重跑覆盖) | CLI 退出码 3 |
 | 存储 | 维度不符 collection | upsert 前 fail-fast, 报"换模型须重建 collection" | ValueError |
-| 检索 | embedding 失败/Milvus 故障 | API 502 | /library |
-| 检索 | asset 缺失(image_ref 指向不存在) | 证据卡降级为纯文字(text_preview), `image_url` 省略 | /library |
-| 检索 | collection 空/未建 | 200 + evidence=[] + answer=null (`available=false` 见 /collections) | /library |
-| 检索 | filters 显式传入但归一为空(书/章不存在) | **422**(防拼写错误静默全库; 响应含缺失项清单) | /library |
-| 检索 | filters 与 set_id 同传 / kinds 含非法值 | 422 | /library |
-| 检索 | set_id 不存在或已删除 | 404 | /library |
-| 集合 | chunk_ids > 500 / 重名 | 422 | /library/sets |
+| 检索 | embedding 失败/Milvus 故障 | API 502 | /documents |
+| 检索 | asset 缺失(image_ref 指向不存在) | 证据卡降级为纯文字(text_preview), `image_url` 省略 | /documents |
+| 检索 | collection 空/未建 | 200 + evidence=[] + answer=null (`available=false` 见 /collections) | /documents |
+| 检索 | filters 显式传入但归一为空(书/章不存在) | **422**(防拼写错误静默全库; 响应含缺失项清单) | /documents |
+| 检索 | filters 与 set_id 同传 / kinds 含非法值 | 422 | /documents |
+| 检索 | set_id 不存在或已删除 | 404 | /documents |
+| 集合 | chunk_ids > 500 / 重名 | 422 | /documents/sets |
 
 ## 16. CLI 契约 (`ingest_multimodal_pdf.py`)
 
@@ -434,9 +434,9 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | vectorizer | 429 退避节奏(mock 时钟); RPM 窗口; dim 探测; 截断标记 |
 | backend | FakeClient(仿 test_milvus_store) 幂等删插; 维度校验失败路径; search 字段映射 |
 | factory | 混配矩阵: mm+none ✓ / mm+milvus raise / none 单独+text dense 合法性 |
-| library_repository | sets CRUD(重名 422/超限 422/失效计数); aggregate_filters 分组排序; expand_books 缺失清单 |
+| document_repository | sets CRUD(重名 422/超限 422/失效计数); aggregate_filters 分组排序; expand_books 缺失清单 |
 | 入库 CLI | 自然排序(ch2<ch10); --book 元数据写入; 未指定 --book 兜底 book_id |
-| library_service | text/multimodal 分支(mock); 502/空集合契约; image_ref 缺失降级; **filter 归一**(books 展开∪chapters 去重/交集陷阱反例/显式空展开 422); set 展开两型 |
+| document_service | text/multimodal 分支(mock); 502/空集合契约; image_ref 缺失降级; **filter 归一**(books 展开∪chapters 去重/交集陷阱反例/显式空展开 422); set 展开两型 |
 
 端到端(需服务): 真 PDF 入库(点数/幂等/停 vLLM 降级); bbox 坐标验证(§14.1-1); curl 验收 §10-5; 70 存量单测回归 + `/ask` 冒烟(零改动证明)。
 
@@ -448,7 +448,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | embedding 吞吐 | 120RPM 上限 → 100 页(~200 块) ≈ 2 分钟; 入库总时长主要受解析支配 |
 | 检索延迟 | multimodal 路 = 1 次 embedding(API ~200ms) + 1 次 Milvus search(<50ms); P95 目标 <1.5s(不含生成) |
 | 磁盘 | dpi=200 页图 ~150-300KB/页 + 插图; 100 页课件 ≈ 30-60MB(文档注明, 二期 MinIO 解耦) |
-| 可观测 | `log_rag` 新 stage: parse/chunk/describe/embed/upsert 各记 {document_id, counts, elapsed}; /library 响应带 trace_id+latency_ms(沿用现有中间件) |
+| 可观测 | `log_rag` 新 stage: parse/chunk/describe/embed/upsert 各记 {document_id, counts, elapsed}; /documents 响应带 trace_id+latency_ms(沿用现有中间件) |
 
 ## 19. 系统架构总览 (跨部分横切, 2026-09-15 补全)
 
@@ -457,10 +457,10 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 ```
 [浏览器 Next.js :3000]
    ├─ /                文档问答(现有, /agent/api/ask 代理)
-   └─ /library         全库查询(MM-3, /agent/api/library 代理)
+   └─ /documents         全库查询(MM-3, /agent/api/documents 代理)
 [FastAPI :8000]
    ├─ ask_api(现有, 零改动)          rag_nodes 路(dense=milvus+sparse=milvus)
-   ├─ library_api(MM-2 新增)         text 路(rag_nodes 全库 RRF) / multimodal 路(rag_multimodal)
+   ├─ document_api(MM-2 新增)         text 路(rag_nodes 全库 RRF) / multimodal 路(rag_multimodal)
    └─ ingest CLI(离线)               EDGAR 管线(现有) / multimodal_pdf 管线(MM-1)
 [基础设施]
    ├─ PostgreSQL(rag_documents/rag_nodes/eval_jobs — 事实源)
@@ -476,8 +476,8 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 
 | collection | 维度 | 检索方式 | 写入方 | 消费方 |
 |---|---|---|---|---|
-| `rag_nodes` | 1536(OpenRouter nvidia) | dense+BM25 混合+scope 下推 | EDGAR 管线(现有) | /ask + /library text 路 |
-| `rag_multimodal` | 2048(ark doubao-embedding-vision, 探测) | dense-only(v1) | multimodal 管线(MM-1) | /library multimodal 路 |
+| `rag_nodes` | 1536(OpenRouter nvidia) | dense+BM25 混合+scope 下推 | EDGAR 管线(现有) | /ask + /documents text 路 |
+| `rag_multimodal` | 2048(ark doubao-embedding-vision, 探测) | dense-only(v1) | multimodal 管线(MM-1) | /documents multimodal 路 |
 
 跨 collection 混合检索 = 非目标(§7 P2: 两库向量空间不同)。
 
@@ -486,7 +486,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 入库A(文本, 现有): EDGAR HTML → section tree → rag_nodes(PG) → Milvus rag_nodes(dense+text)
 入库B(多模态, MM-1): PDF → dots.ocr/vLLM 页解析 → 分块 → VLM 描述(增强层) → ark 多模态向量 → rag_multimodal + rag_documents + 资产落盘
 查询A(/ask, 现有): 问题 → scope 下推 → 混合检索 → rerank → 生成
-查询B(/library): collection=text → 全库混合+RRF+rerank; =multimodal → ark 向量 → dense top-k → (可选)生成
+查询B(/documents): collection=text → 全库混合+RRF+rerank; =multimodal → ark 向量 → dense top-k → (可选)生成
 
 ## 20. 数据生命周期与一致性
 
@@ -513,7 +513,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 场景 | 回滚动作 | 成本 |
 |---|---|---|
 | 多模态后端缺陷影响文本主链 | `DENSE_BACKEND=milvus` 本就是默认 — **零改动边界保证文本链路从未变过**, 无需回滚动作 | 0(设计保证) |
-| /library 缺陷 | 前端下掉入口或 server 移除 router 注册(1 行) | 分钟级 |
+| /documents 缺陷 | 前端下掉入口或 server 移除 router 注册(1 行) | 分钟级 |
 | 多模态数据污染 | delete 工具清 document + 资产; collection 可整删重建(`ensure_collection` 幂等) | 取决于入库量 |
 | 模型故障(ark/zhipu) | env 切备选链(§2 实测矩阵), embedding 换模型须重建 collection(维度校验拦截误配) | 分钟级 + 重嵌成本 |
 | 发布顺序 | MM-1(纯增量, 默认 env 不激活) → MM-2(默认 env 下 /ask 冒烟+70 单测回归为发布门禁) → MM-3 | 每步可独立回退 |
@@ -523,8 +523,8 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 层 | 机制 | 覆盖 |
 |---|---|---|
 | 结构化日志 | `log_rag` 现有机制, 多模态新增 stage: parse/chunk/describe/embed/upsert(§18) | 入库全链路每文档 |
-| 请求追踪 | trace_id + latency_ms(沿用现有中间件), /library 响应契约内建 | 两查询路 |
-| LLM 观测 | langfuse: /ask 现有覆盖; /library 生成调用纳入同一 client 包装 | 生成+VLM 描述(批量入库的 VLM 调用记 langfuse, 关联 document_id) |
+| 请求追踪 | trace_id + latency_ms(沿用现有中间件), /documents 响应契约内建 | 两查询路 |
+| LLM 观测 | langfuse: /ask 现有覆盖; /documents 生成调用纳入同一 client 包装 | 生成+VLM 描述(批量入库的 VLM 调用记 langfuse, 关联 document_id) |
 | 质量门禁 | m4_benchmark.py 基建复用: MM-2 后跑 text 路零回归; 多模态 R4 指标(MultiModalFaithfulness)接入后纳入 | 发布门禁+趋势 |
 | 资源水位 | Milvus count(/collections 端点) + 资产目录体积(CLI 摘要输出) | 容量规划 |
 
@@ -551,7 +551,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 2 env 切换 | factory 混配矩阵单测 | MM-2 |
 | 3 混配 fail-fast | 同上 | MM-2 |
 | 4 入库幂等/降级 | backend FakeClient 幂等 + CLI 端到端(含停 vLLM) | MM-1 |
-| 5 查询图文证据 | library_service 单测 + curl 验收 | MM-2(+MM-3 UI 面) |
+| 5 查询图文证据 | document_service 单测 + curl 验收 | MM-2(+MM-3 UI 面) |
 | 6 新单测六类 | §17 表全部 | MM-1/MM-2 各自交付 |
 | bbox 坐标验证(§14.1-1) | 真 PDF 首跑人工比对 | MM-1 第一周 |
 | 资产两期迁移(§11) | 抽样字节校验 | 二期 |
