@@ -307,6 +307,7 @@ v1 §4.3 契约沿用(ask/collections/page-image 三端点、请求响应模型�
 | **MM-2 检索 API** | `document_api.py` + `document_service.py`(filters/set_id 下推) + `GET /documents/filters` 聚合 + PG `document_sets` 表 + 集合 CRUD + `SPARSE_BACKEND=none` + ask 守卫 | 验收 2/5/6/7 检索面/8 |
 | **MM-3 前端** | 第三部分 `/documents` 页 + 书籍/章节级联筛选器(启动拉 /filters) + 证据卡"加入集合"勾选 + 集合管理下拉(见迁移文档 §5) | 验收 5/7/8 的 UI 面 |
 | **二期 MinIO 资产迁移** | `MinioAssetStore` + `scripts/multimodal_assets_migrate.py` + compose `rag-minio`; env 切 `MULTIMODAL_ASSET_STORE=minio` | 图片字节抽样校验全等, API/前端零改动 |
+| **资产 GC(与二期同批)** | `scripts/multimodal_assets_gc.py`: 资产目录 vs Milvus image_ref 对账, 删除孤儿(§20.1 级联残留兜底的落地) | dry-run 清单 → 确认后删除, 数量对账 |
 
 MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收后独立排期(asset store 接口已定型, 迁移成本=实现类+搬迁脚本)。
 
@@ -330,6 +331,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | T2.2 切换与守卫 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵 + ask 守卫 | 单测(factory 矩阵) + 70 存量回归 | T1.4 |
 | T2.3 服务与路由 | `document_service.py`(归一单点/set 展开) + `document_api.py`(ask/collections/page-image/filters/sets) | 单测(service 全行) + curl 五端点验收(§10-5/7/8) | T2.1, T2.2 |
 | T2.4 删除级联 | `delete_ingested_document` 多模态分支(点+PG+资产, §20.1 顺序) | 手工验收(删文档→检索落空/资产目录清) | T2.3 |
+| T2.5 多模态评测门禁(2026-09-15 评审补) | 小型 gold set: 10-20 题课件问题+gold chunk 标注(人工); 接 RAGAS R4 MultiModalFaithfulness/Relevance | 跑一轮出基线分, 纳入发布门禁趋势 | MM-1 真实入库后 |
 
 **MM-3 前端 (估 3 天)**
 
@@ -343,6 +345,8 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 **串行依赖链**: T1.2→T1.3→T1.5 与 T1.1/T1.4 可并行; T2.x 内部串行; T3 依赖 MM-2 全部。
 **首个可演示里程碑**: T1.5 完成(后端可 curl 演示入库+检索); 完整体验在 T3.3。
 
+**MM-4 章节浏览与人工策展(2026-09-15 评审补, 小迭代 ~1 天)**: `GET /documents/chapters/{document_id}/chunks?kind=&page=&page_size=`(分页, Milvus expr 或 PG 聚合按 page_no/title 排序) + 前端章节内容抽屉(证据卡复用) — 动机: ①"看看这章讲什么"是浏览诉求非检索诉求 ②集合策展可人工挑 chunk(不只靠搜索命中)。
+
 ## 12. 风险与开放问题
 
 | 风险 | 缓解 |
@@ -354,6 +358,8 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | 中文 PDF 的 BM25 jieba 分词质量 | v1 检索不走 sparse, 无影响; P2 启用 sparse 时再评 |
 | bbox 坐标系(smart_resize vs 页图像素)映射错位 | §14.1-1: MM-1 首跑真 PDF 打印 bbox 与页图尺寸比对验证; 错位则加比例修正 |
 | **开放**: vLLM 服务部署位置(本机 4090/远端) | 不阻塞设计; MM-1 前用户确认, 文档已给 docker 启动命令 |
+
+**显式不做(2026-09-15 评审, 防重复讨论; 各附升级条件)**: ①书籍版本管理(v1=删除重入库; 升级条件=版本对比成真实诉求) ②多用户/权限(单用户演示; 升级=多人使用) ③DOCX/PPTX/EPUB 导入(解析器接口已抽象, PDF 先行; 升级=PDF 场景验收后) ④多轮对话追问(v1 单轮与 /ask 一致; 升级=交互反馈需要)。
 
 ## 13. 对 v1 §4 的覆盖汇总
 
@@ -420,6 +426,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 退出码: 0=成功(含 filtered 降级页) | 2=解析不可达且禁降级 | 3=向量化/存储失败 | 4=参数/文件错误
 幂等: 同 document_id 重跑 = 先删点再全量写, 点数不变(验收 §10-4)
 上限防护: 单文档 >500 页 或 PDF>200MB → 拒绝并提示(防打爆磁盘/批任务时长)
+成本可见: `--dry-run` 仅解析不调模型, 输出预计调用量(页数/插图数/VLM 描述次数/embedding 次数); 正常跑的摘要含 token_usage(vlm/embedding 分开计数, 取自各 provider usage 字段)
 ```
 
 ## 17. 测试与验证计划
