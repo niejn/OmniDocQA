@@ -331,7 +331,7 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | T2.2 切换与守卫 | factory `milvus_multimodal` 分支 + `NoneSparseBackend` + 校验矩阵 + ask 守卫 | 单测(factory 矩阵) + 70 存量回归 | T1.4 |
 | T2.3 服务与路由 | `document_service.py`(归一单点/set 展开) + `document_api.py`(ask/collections/page-image/filters/sets) | 单测(service 全行) + curl 五端点验收(§10-5/7/8) | T2.1, T2.2 |
 | T2.4 删除级联 | `delete_ingested_document` 多模态分支(点+PG+资产, §20.1 顺序) | 手工验收(删文档→检索落空/资产目录清) | T2.3 |
-| T2.5 多模态评测门禁(2026-09-15 评审补) | 小型 gold set: 10-20 题课件问题+gold chunk 标注(人工); 接 RAGAS R4 MultiModalFaithfulness/Relevance | 跑一轮出基线分, 纳入发布门禁趋势 | MM-1 真实入库后 |
+| T2.5 多模态评测门禁(2026-09-15 评审补) | **题目生成=LLM 起草+人工校准**(`scripts/gen_multimodal_evalset.py` ~100 行): ①分层采样 chunk({text,image}×{书/章}) ②逐 chunk LLM 起草问答(image 题基于 VLM 描述+原图) ③人工校准 ~1h(删坏题/图题人工对图验答案) ④缩编 10-20 题覆盖文本/图片/跨章/专名。**gold set 字段(防 M4 假阳性核心)**: question + reference + `gold_chunk_ids`(命中硬断言) + `scope{book,chapter}`(范围硬断言) + kind + 生成溯源 — M4 教训映射: judge 只验"context 支撑 answer"不验范围, OS 轮错年份引用照样满分; 两字段把"检索对不对"变为不经 LLM 的硬判。评测: 接 R4 MultiModalFaithfulness/Relevance | 跑一轮出基线分, 纳入发布门禁趋势 | MM-1 真实入库后 |
 
 **MM-3 前端 (估 3 天)**
 
