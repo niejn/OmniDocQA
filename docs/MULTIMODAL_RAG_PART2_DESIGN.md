@@ -1,5 +1,7 @@
 # 第二部分实施设计: 多模态模型支持与多模态密集向量后端 (v2)
 
+> **开工执行请看 `MULTIMODAL_DEV_PLAN.md`(施工图: 终态精要+WBS+门禁)**; 本文为完整需求与决策档案。
+
 > 状态: 设计定稿, 待开发 | 日期: 2026-09-15
 > 基线: `MULTIMODAL_MILVUS_MIGRATION.md` §4 (v1 需求) — 本文细化并部分**收窄/覆盖** v1; 冲突处以本文为准。
 > 调研来源: [rednote-hilab/dots.ocr](https://github.com/rednote-hilab/dots.ocr) (MIT, 现更名 dots.mocr) 源码级分析 (parser.py / model/inference.py / utils/prompts.py)。

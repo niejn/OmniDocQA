@@ -678,3 +678,4 @@ R1(已完成) → M4 评测(1A+1B 一并验收) → R2 → R3 第一/二批
 | v1.34 | T2.5 题目生成方法定稿: LLM 起草+人工校准(gen_multimodal_evalset.py, 分层采样→逐 chunk 起草→人工 ~1h→缩编 10-20 题); gold set 五字段含 gold_chunk_ids+scope 硬断言(不经 LLM 的检索正确性判据, 直击 M4 假阳性根因); 与 R2 TestsetGenerator 分工=小集门禁 vs 大集合成 |
 | v1.35 | T2.5 题型补全: 跳数=生成时设计(喂 N chunk 即 N 跳) — 单跳(HitRate)/同章聚合(gold=集合, GoldRecall@k+MRR 测排序)/跨书比较(filter+多 gold), 配比 60/30/10; 指标纯计算不经 LLM; 真 multi-hop P2(单轮检索不支持) |
 | v1.37 | 评测讨论收口(§17.1): 代码/数据解耦(脚本可与 T1.x 并行开发, 运行硬依赖 T1.5 chunk); 评测执行四步(检索→硬断言→RAGAS 软评分→±阈值门禁, 沿用 M4 模式); 出题防坑四项对照表(指代词/原文复述/假多跳/VLM 描述错) |
+| v1.38 | 新增 `MULTIMODAL_DEV_PLAN.md`(施工图): 终态设计一页总览(硬约束/架构/数据模型/检索路径/管线/API/前端/门禁/横切精要) + WBS 任务表(MM-1×5/MM-2×5/MM-3×3/MM-4, 依赖/验证/里程碑映射) + 发布门禁 + 开工前置清单; PART2_DESIGN 挂指针定位为决策档案 |
