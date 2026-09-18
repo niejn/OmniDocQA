@@ -15,7 +15,7 @@
 
 ## 1. dots.ocr 代码级借鉴清单
 
-官方仓库结构 `dots_ocr/{parser.py, model/inference.py, utils/{prompts,image_utils,doc_utils,layout_utils,format_transformer,output_cleaner}.py}`。逐项映射:
+**参考项目实物**(对照实现时查证): `D:\mashibing\RAG_RAGAS\code` — 含 `dots_ocr/`(解析器), `Multimodal_RAG/`(分块/图片描述/embedding 限路, 迁移文档 §2 借鉴映射的来源), collection 建法。官方仓库(解析协议权威源)结构 `dots_ocr/{parser.py, model/inference.py, utils/{prompts,image_utils,doc_utils,layout_utils,format_transformer,output_cleaner}.py}`。逐项映射:
 
 | dots.ocr 实现 (已读源码) | 本项目落点 | 借鉴方式 |
 |---|---|---|
@@ -294,7 +294,7 @@ v1 §4.3 契约沿用(ask/collections/page-image 三端点、请求响应模型�
 1. **零改动**: `git diff` 中 `vectorizer.py`/`dense_milvus.py`/`ask_api.py`/`rag_nodes` 相关 = 0 行改动; 70 存量单测全绿。
 2. **env 切换**: `DENSE_BACKEND=milvus` 一切如旧; `=milvus_multimodal` 时 factory 返回新后端, `/ask` 得到清晰 ValueError, `/documents` 正常。
 3. **混配 fail-fast**: `milvus_multimodal` + `sparse=milvus` 启动即报错(新单测覆盖)。
-4. **入库**: 课件 PDF → `rag_documents` +1, `rag_multimodal` 点数=文本块+图片块; 重跑幂等; 停 DOTS·OCR 降级入库成功。
+4. **入库**(样例见 §17.2): 课件 PDF → `rag_documents` +1, `rag_multimodal` 点数=文本块+图片块; 重跑幂等; 停 DOTS·OCR 降级入库成功。
 5. **查询**: `POST /agent/api/documents/ask {collection:"multimodal", question:"有界流和无界流的定义"}` → 200, answer 非空, evidence 相关页 `image_url` 可 GET 到字节。
 6. **单测**(新增): 维度校验失败路径 / 429 退避 / 路径穿越拒绝 / factory 混配矩阵 / layout JSON→md 转换 / fitz 降级分支 / filter 表达式构造 / 集合展开。
 7. **书籍聚合**(§6.1): 同 `--book` 入库 3 个章节 PDF → `/documents/filters` 返回 1 本书 3 章; `filters:{books:[...]}` 检索命中仅该书; `filters:{chapters:[doc_id]}` 命中仅该章。
@@ -449,6 +449,46 @@ MM-1/MM-2 后端可独立验收; 前端不阻塞。二期 MinIO 在一期验收�
 | document_service | text/multimodal 分支(mock); 502/空集合契约; image_ref 缺失降级; **filter 归一**(books 展开∪chapters 去重/交集陷阱反例/显式空展开 422); set 展开两型 |
 
 端到端(需服务): 真 PDF 入库(点数/幂等/停 vLLM 降级); bbox 坐标验证(§14.1-1); curl 验收 §10-5; 70 存量单测回归 + `/ask` 冒烟(零改动证明)。
+
+### 17.1 评测时序与执行流程 (2026-09-16 讨论)
+
+```
+时序(代码与数据解耦):
+  T1.1-T1.4 基础模块 ──并行──▶ gen_multimodal_evalset.py 代码就绪(FakeClient 单测)
+  T1.5 真 PDF 入库 ──▶ T2.5 运行: 采样出题(自动 ~10min) → 人工校准(~1h) → evalset.json
+              ──▶ 跑基线 → 之后每次管线变更跑门禁对比
+```
+
+评测执行四步(runner 复用 m4_benchmark.py 模式):
+
+| 步 | 内容 | 经 LLM? |
+|---|---|---|
+| ① 检索 | 逐题 POST /documents/ask(generate_answer=false), 取 top-k evidence | — |
+| ② 硬断言 | top-k ∩ gold_chunk_ids → HitRate/MRR/GoldRecall; 命中 scope 比对; 任一不符该题判负 | 否 |
+| ③ 软评分 | (可选, generate_answer=true 轮) RAGAS faithfulness 等, 复用现有 judge 基建 | 是 |
+| ④ 门禁报告 | 各指标 vs 基线 ±阈值(沿用 M4 ±2% 惯例), 回归标红 | 否 |
+
+出题防坑对照(蓝图 #11 的依据):
+
+| 坑 | 后果(不防) | 防法 |
+|---|---|---|
+| 问题带指代词("根据上图") | 题不自包含, 召回虚高 | prompt 约束 |
+| 问题≈答案原文改写 | 词法/向量直送分 | prompt 约束 + n-gram 重叠自检 flag |
+| 聚合题实际只用 1 chunk | 假多跳, GoldRecall 虚低 | "每片段各贡献一部分"约束 + 人工核查 |
+| image 题 VLM 描述错 | 参考答案本身就错 | 人工对原图核(校准最关键一步) |
+
+### 17.2 测试素材与样例阶梯 (2026-09-16 落实, 已核实页数/体积在上限内)
+
+| 样例 | 路径 | 页数 | 角色 |
+|---|---|---|---|
+| **Flink 第一章** | `D:\mashibing\RAG_RAGAS\code\第一章 Apache Flink 概述.pdf` | 14 | 真实"章节 PDF"样例(参考项目自带, 分章节书需求的现实来源); 概念题源 |
+| 主课件 | `D:\mashibing\RAG_RAGAS\课件\GraphRAG+多模态RAG+Ragas的项目开发.pdf` | 84 | gold set 主出题源(图文最丰富, 内容自指) |
+| demo_pdf1 | `D:\mashibing\RAG_RAGAS\code\demo_pdf1.pdf` | 2 | dots.ocr 官方 demo 同款; **T1.2 bbox 坐标首验最小样本**(秒级反馈) |
+| 英文论文 | `D:\mashibing\large-model-finetuning-and-deployment-course-courseware\Parameter-EfficientFine-TuningforLargeModels.pdf` | 25 | 无 `--book` 独立文档成书 + 英文语料 + 跨语言检索 |
+
+**书籍聚合组合**: `--book "Apache Flink"` 收 Flink 第一章 + 主课件拆出的 chapter-02/03(fitz 3 行拆分 → `tools/data/multimodal_test/`) → `/documents/filters` 应返回 1 本书 3 章(第 1 章真实, 后 2 章拆分模拟)。
+
+**测试阶梯**: demo_pdf1(T1.2 解析冒烟+bbox 首验) → Flink 章(T1.5 入库端到端) → 组合书(聚合/filter 验收 §10-7) → 全样例(T2.5 出题+基线)。
 
 ## 18. 性能预算与可观测性
 
