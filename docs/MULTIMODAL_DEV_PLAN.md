@@ -151,7 +151,9 @@ gold set(10-20题): LLM 反向合成(chunk→考题, 喂 N chunk 即 N 跳) + �
 
 | 样例 | 路径 | 用途 |
 |---|---|---|
-| 主课件（84 页/7MB） | `D:\mashibing\RAG_RAGAS\课件\GraphRAG+多模态RAG+Ragas的项目开发.pdf` | 内容自指（讲多模态 RAG 的多模态文档）；按页 1/3 拆成 `chapter-01/02/03.pdf`（fitz 3 行）→ `--book` 入库测**书籍聚合 + 章 filter** |
+| **Flink 第一章（14 页/1MB）** | `D:\mashibing\RAG_RAGAS\code\第一章 Apache Flink 概述.pdf` | **真实"章节 PDF"样例**（参考项目自带，分章节书需求的现实来源）；概念密度高，单章入库=1 本书 1 章；与拆分章节合成《Apache Flink》书测多章聚合 |
+| 主课件（84 页/7MB） | `D:\mashibing\RAG_RAGAS\课件\GraphRAG+多模态RAG+Ragas的项目开发.pdf` | 内容自指（讲多模态 RAG 的多模态文档，图文最丰富）；T2.5 gold set 主出题源 |
+| demo_pdf1（2 页） | `D:\mashibing\RAG_RAGAS\code\demo_pdf1.pdf` | dots.ocr 官方 demo 同款；**T1.2 首次真机冒烟 + bbox 坐标首验的最小样本**（秒级反馈） |
 | 英文论文（25 页/1MB） | `D:\mashibing\large-model-finetuning-and-deployment-course-courseware\Parameter-EfficientFine-TuningforLargeModels.pdf` | 无 `--book` 入库测**独立文档成书** + 英文语料 + dense 检索跨语言 |
 
-章节拆分（测试准备一次性脚本）：`fitz.open(主课件)` → 三段 `insert_pdf` → `tools/data/multimodal_test/chapter-0{1,2,3}.pdf`。T2.5 gold set 的 10-20 题即从主课件入库后的 chunk 生成（中文/图文/跨章题天然齐备）。
+**书籍聚合测试组合**：`--book "Apache Flink"` 收 Flink 第一章 + 主课件拆出的 chapter-02/03（fitz 3 行拆分 → `tools/data/multimodal_test/`）→ 入库后 `/documents/filters` 应返回 1 本书 3 章，其中第 1 章为真实章节样例。T2.5 gold set 主出题源=主课件 chunk（中文/图文/跨章天然齐备），Flink 章节补概念题。
