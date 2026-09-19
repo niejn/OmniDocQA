@@ -146,13 +146,12 @@ class Config(BaseSettings):
     # Set to 0 to disable budget mode and fall back to fixed top_k.
     context_char_budget: int = Field(default=6000)  # env: CONTEXT_CHAR_BUDGET
 
-    bocha_reranker_url: str | None = Field(default=None)  # env: BOCHA_RERANKER_URL
+    # Bocha key/timeout are used by the leads web/AI search client (tools/leads/bocha_search.py).
     bocha_api_key: str | None = Field(default=None)  # env: BOCHA_API_KEY
-    bocha_reranker_model: str = Field(default="bocha-semantic-reranker-cn")  # env: BOCHA_RERANKER_MODEL
     bocha_timeout_seconds: float = Field(default=8.0)  # env: BOCHA_TIMEOUT_SECONDS
-    bocha_top_n: int = Field(default=12)  # env: BOCHA_TOP_N
+    reranker_top_n: int = Field(default=12)  # env: RERANKER_TOP_N
 
-    # Reranker selection: local (sentence-transformers CrossEncoder, default) | bocha | none
+    # Reranker selection: local (sentence-transformers CrossEncoder, default) | none
     reranker_backend: str = Field(default="local")  # env: RERANKER_BACKEND
     local_reranker_model: str = Field(default="Qwen/Qwen3-Reranker-0.6B")  # env: LOCAL_RERANKER_MODEL
     local_reranker_max_length: int = Field(default=8192)  # env: LOCAL_RERANKER_MAX_LENGTH
@@ -209,13 +208,54 @@ class Config(BaseSettings):
     # Narrative retrieval: avoid repeated template chunks occupying top slots.
     narrative_dedupe_enabled: bool = Field(default=True)  # env: NARRATIVE_DEDUPE_ENABLED
     narrative_dedupe_similarity_threshold: float = Field(default=0.84)  # env: NARRATIVE_DEDUPE_SIMILARITY_THRESHOLD
-    # Narrative: run Bocha rerank with multiple facet queries (e.g. RF + distribution + receivables) and merge by max score.
+    # Narrative: run the local reranker with multiple facet queries (e.g. RF + distribution + receivables) and merge by max score.
     narrative_multi_rerank_enabled: bool = Field(default=True)  # env: NARRATIVE_MULTI_RERANK_ENABLED
     narrative_multi_rerank_max_queries: int = Field(default=3)  # env: NARRATIVE_MULTI_RERANK_MAX_QUERIES
     # Narrative leaf dense/sparse: True = do not restrict by finance_accns (all filings in document_ids); False = prefer filing-scoped leaf when finance_accns is set.
     narrative_leaf_all_filings: bool = Field(default=True)  # env: NARRATIVE_LEAF_ALL_FILINGS
     # Comma-separated rag_documents.id values removed from each ask's retrieval scope (e.g. 9500 XBRL companyfacts).
     rag_ask_excluded_document_ids: str = Field(default="")  # env: RAG_ASK_EXCLUDED_DOCUMENT_IDS
+
+    # ── Multimodal document library (Part 2; see docs/MULTIMODAL_RAG_PART2_DESIGN.md §5) ──
+    # Parse VLM: dots.ocr / dots.mocr served by vLLM (OpenAI-compatible /v1). Empty base
+    # URL = go straight to the fitz text fallback (no layout, text-only chunks).
+    dot_ocr_base_url: str = Field(default="")  # env: DOT_OCR_BASE_URL; e.g. http://127.0.0.1:6006/v1
+    dot_ocr_model: str = Field(default="rednote-hilab/dots.mocr")  # env: DOT_OCR_MODEL
+    dot_ocr_api_key: str = Field(default="0")  # env: DOT_OCR_API_KEY (placeholder when vLLM has no auth)
+    dot_ocr_dpi: int = Field(default=200)  # env: DOT_OCR_DPI
+    dot_ocr_max_threads: int = Field(default=16)  # env: DOT_OCR_MAX_THREADS
+    dot_ocr_temperature: float = Field(default=0.1)  # env: DOT_OCR_TEMPERATURE
+    dot_ocr_max_completion_tokens: int = Field(default=16384)  # env: DOT_OCR_MAX_COMPLETION_TOKENS
+    dot_ocr_fallback_fitz: bool = Field(default=True)  # env: DOT_OCR_FALLBACK_FITZ
+
+    # Multimodal embedding (image+text joint vector space; ark doubao-embedding-vision by default).
+    multimodal_embedding_provider: str = Field(default="ark")  # env: MULTIMODAL_EMBEDDING_PROVIDER; ark | dashscope
+    multimodal_embedding_model: str = Field(default="doubao-embedding-vision")  # env: MULTIMODAL_EMBEDDING_MODEL
+    multimodal_embedding_base_url: str = Field(default="")  # env: MULTIMODAL_EMBEDDING_BASE_URL; empty = OPENAI_BASE_URL
+    multimodal_embedding_api_key: str = Field(default="")  # env: MULTIMODAL_EMBEDDING_API_KEY; empty = OPENAI_API_KEY
+    multimodal_embedding_dim: int = Field(default=0)  # env: MULTIMODAL_EMBEDDING_DIM; 0 = auto-detect on first call
+    multimodal_embed_rpm: int = Field(default=120)  # env: MULTIMODAL_EMBED_RPM
+    multimodal_embed_max_retries: int = Field(default=5)  # env: MULTIMODAL_EMBED_MAX_RETRIES
+    multimodal_embed_backoff_base: float = Field(default=2.0)  # env: MULTIMODAL_EMBED_BACKOFF_BASE
+    dashscope_api_key: str = Field(default="")  # env: DASHSCOPE_API_KEY (only when provider=dashscope)
+
+    # Image description VLM (base layer = context stitching is free; vlm mode adds in-image reading).
+    multimodal_vlm_model: str = Field(default="doubao-seed-2-0-lite-260428")  # env: MULTIMODAL_VLM_MODEL
+    multimodal_vlm_base_url: str = Field(default="")  # env: MULTIMODAL_VLM_BASE_URL; empty = OPENAI_BASE_URL
+    multimodal_vlm_api_key: str = Field(default="")  # env: MULTIMODAL_VLM_API_KEY; empty = OPENAI_API_KEY
+    multimodal_describe_mode: str = Field(default="vlm")  # env: MULTIMODAL_DESCRIBE_MODE; vlm | context
+
+    # Multimodal storage/asset layout (phase 1 local disk; phase 2 MinIO keeps the same asset keys).
+    multimodal_asset_store: str = Field(default="local")  # env: MULTIMODAL_ASSET_STORE; local | minio(phase 2)
+    multimodal_collection: str = Field(default="rag_multimodal")  # env: MULTIMODAL_COLLECTION
+    multimodal_pages_dir: str = Field(default="tools/data/multimodal_pages")  # env: MULTIMODAL_PAGES_DIR
+    # Phase-2 MinIO asset store (independent lifecycle: NOT milvus's internal minio / langfuse's).
+    minio_endpoint: str = Field(default="127.0.0.1:9002")  # env: MINIO_ENDPOINT
+    minio_access_key: str = Field(default="minioadmin")  # env: MINIO_ACCESS_KEY
+    minio_secret_key: str = Field(default="minioadmin")  # env: MINIO_SECRET_KEY
+    minio_bucket: str = Field(default="rag-multimodal")  # env: MINIO_BUCKET
+    minio_secure: bool = Field(default=False)  # env: MINIO_SECURE
+    document_ask_default_top_k: int = Field(default=8, ge=1, le=50)  # env: DOCUMENT_ASK_DEFAULT_TOP_K
 
     ragas_enabled: bool = Field(default=False)  # env: RAGAS_ENABLED
     ragas_llm_model: str = Field(default="deepseek/deepseek-chat")  # env: RAGAS_LLM_MODEL
