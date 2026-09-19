@@ -219,7 +219,7 @@ Schema、向量维度、索引名称和检索字段变更前，应保留迁移�
 | 混合检索 | Qdrant + PostgreSQL/OpenSearch | 统一接口和回退策略 |
 | 金融事实 | SEC observations SQL 查询 | 增强指标、期间和 RAG 证据对齐 |
 | 上下文组装 | sibling expansion、字符预算、去重 | 增加证据覆盖率指标 |
-| 重排序 | Bocha、narrative multi-rerank | 明确候选池和失败降级 |
+| 重排序 | 本地 CrossEncoder、narrative multi-rerank | 明确候选池和失败降级 |
 | 证据链 | pipeline trace、evidence UI | 强化原文定位和引用校验 |
 | 图检索 | 当前主要是 section tree | 增加跨文档引用关系后再引入 |
 | 句子检索 | 当前以段落节点为主 | 在引用精度不足时建设 |

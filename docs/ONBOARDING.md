@@ -27,7 +27,7 @@ The system is organized into the following layers (from the knowledge graph):
 | **API & HTTP Layer** | FastAPI app, ask router, server entry points, HTTP endpoints | `src/agent/api/server.py`, `tools/asks/ask_api.py`, `src/start_fastapi.py`, `src/agent/run_server.py` |
 | **Core Configuration** | Central Pydantic settings + env template for all runtime dimensions | `src/agent/core/config.py`, `src/agent/env.example`, `pyproject.toml` |
 | **Ask Pipeline & Answer Generation** | RAG answering service: SQL evidence, retrieval, context assembly, LLM generation, evidence extraction | `tools/rag_service.py`, `tools/rag_graph.py`, `tools/answer_evidence_quotes.py`, `tools/llm.py`, `tools/ragas_llm.py` |
-| **Retrieval & Reranking** | Hybrid retrieval orchestration + Bocha & narrative multi-facet rerankers, embedding/vector helpers | `tools/llamaindex_retrieval.py`, `tools/bocha_reranker.py`, `tools/narrative_multi_rerank.py`, `tools/vectorizer.py` |
+| **Retrieval & Reranking** | Hybrid retrieval orchestration + local CrossEncoder & narrative multi-facet rerankers, embedding/vector helpers | `tools/llamaindex_retrieval.py`, `tools/local_reranker.py`, `tools/narrative_multi_rerank.py`, `tools/vectorizer.py` |
 | **Retrieval Backends** | Pluggable dense (Qdrant) / sparse (Postgres full-text / OpenSearch) adapters + factory | `tools/retrieval_backends/factory.py`, `dense_qdrant.py`, `sparse_postgres.py`, `sparse_opensearch.py`, `types.py` |
 | **Finance Domain** | SQL vs RAG routing, heuristic/LLM query planning, SEC facts, evidence narrowing, locale | `tools/finance/question_router.py`, `finance_intent.py`, `finance_query_plan*.py`, `financial_facts_repository.py`, `sec_company_facts.py`, `report_locale.py` |
 | **EDGAR Ingestion** | End-to-end parse → section tree → chunk → persist → index | `tools/ingestion_service.py`, `edgar_htm_parser.py`, `edgar_htm_enricher.py`, `chunk_segmenter.py`, `node_repository.py` |
@@ -46,7 +46,7 @@ The system is organized into the following layers (from the knowledge graph):
 - **Finance routing** — A question is classified as needing **SQL evidence** (quantitative, e.g. "revenue in 2024") vs **RAG** (narrative, e.g. business description), using **rule-first keyword matching with LLM fallback** (`question_router.py` → `finance_intent.py`).
 - **SQL evidence narrowing** — When SQL routing is chosen, XBRL-tagged facts are queried from `sec_financial_observations`, and RAG hits are **re-ranked by matching accessions/metrics** (`sql_evidence_narrowing.py`).
 - **Hybrid context assembly** — Top seeds expanded with **sibling expansion** and **char-budget truncation** (`CONTEXT_CHAR_BUDGET`), with optional title-match guarantees for `narrative_targets`.
-- **Optional reranking** — **Bocha** semantic reranker, plus a **multi-facet narrative rerank** that generates facet sub-queries from the evidence plan.
+- **Optional reranking** — **local CrossEncoder** (Qwen3-Reranker), plus a **multi-facet narrative rerank** that generates facet sub-queries from the evidence plan.
 - **Optional LangGraph planner** — `rag_graph.py` can split a question into sub-queries, retrieve each, and merge results.
 - **Filing-resolution** — Since filings come from different report years, finance questions resolve the best-matching filing by form/period/recency (`finance_filing_resolver.py`).
 - **Evidence quote cards** — The answer references verbatim quotes extracted from retrieved nodes (`answer_evidence_quotes.py`) for UI evidence cards.
@@ -64,7 +64,7 @@ Follow the recommended learning path:
 5. **Finance Intent Routing** — `tools/finance/finance_intent.py` + `question_router.py` + `finance_query_plan.py`.
 6. **Finance SQL Evidence** — `tools/finance/financial_facts_repository.py` + `sql_evidence_narrowing.py` + `sec_company_facts.py`.
 7. **Core RAG Answer Service** — `tools/rag_service.py` + `rag_graph.py` + `answer_evidence_quotes.py` (the central hub).
-8. **Hybrid Retrieval & Reranking** — `tools/llamaindex_retrieval.py` + `bocha_reranker.py` + `narrative_multi_rerank.py`.
+8. **Hybrid Retrieval & Reranking** — `tools/llamaindex_retrieval.py` + `local_reranker.py` + `narrative_multi_rerank.py`.
 9. **Retrieval Backends** — `tools/retrieval_backends/factory.py` + the Qdrant/Postgres/OpenSearch adapters.
 10. **EDGAR Ingestion Pipeline** — `tools/ingestion_service.py` → `edgar_htm_parser.py` → `edgar_htm_enricher.py` → `chunk_segmenter.py` → `node_repository.py`.
 11. **Frontend Application** — `src/frontend/src/app/page.tsx`, `DocumentScope.tsx`, API proxy routes.
@@ -94,8 +94,8 @@ Follow the recommended learning path:
 
 **Retrieval & Reranking**
 - `tools/llamaindex_retrieval.py` — Core hybrid retrieval (RRF, filing-aware limiting, narrative section-tree expansion).
-- `tools/bocha_reranker.py` — Bocha semantic reranker HTTP client.
-- `tools/narrative_multi_rerank.py` — Multi-query Bocha rerank for narrative questions.
+- `tools/local_reranker.py` — Local sentence-transformers CrossEncoder reranker (Qwen3-Reranker).
+- `tools/narrative_multi_rerank.py` — Multi-query rerank for narrative questions.
 - `tools/narrative_section_policy.py` — Narrative scoring config (penalties, thresholds).
 - `tools/llamaindex_callbacks.py` — LlamaIndex stage timing for observability.
 - `tools/vectorizer.py` — Embedding provider selection, batching, retry.

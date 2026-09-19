@@ -90,7 +90,7 @@ Key config dimensions:
 2. **Finance intent** → `src/agent/tools/finance/finance_intent.py` routes the question: rule-first keyword matching (`question_router.py`), LLM fallback for ambiguous cases. Produces a `FinanceRoute` (need_sql, need_rag) and optionally a `FinanceQueryPlan` via LLM (`finance_query_plan_llm.py`).
 3. **Retrieval** → `src/agent/tools/llamaindex_retrieval.py`: hybrid search combining dense (Qdrant via `retrieval_backends/dense_qdrant.py`) and sparse (Postgres full-text or OpenSearch via `retrieval_backends/sparse_postgres.py` / `sparse_opensearch.py`). Narrative queries use section-tree search (hit section nodes → expand to leaf descendants).
 4. **Context assembly**: sibling expansion around top seeds, char-budget-based truncation (`CONTEXT_CHAR_BUDGET`), optional title-match guarantees for `narrative_targets`.
-5. **Rerank** (optional): Bocha reranker (`bocha_reranker.py`), multi-facet rerank for narrative (`narrative_multi_rerank.py`).
+5. **Rerank** (optional): local CrossEncoder reranker (`local_reranker.py`), multi-facet rerank for narrative (`narrative_multi_rerank.py`).
 6. **SQL evidence** (finance): when `need_sql=true`, queries `sec_financial_observations` table (`financial_facts_repository.py`) and optionally narrows RAG hits by matching accessions/metrics (`sql_evidence_narrowing.py`).
 7. **Answer generation** → LLM over assembled context in `rag_service.py`. Optional LLM evidence extraction (`answer_evidence_quotes.py`) for UI quote cards.
 8. **Optional**: RAGAS evaluation jobs enqueued to `rag_evaluation_jobs` table, consumed by `run_evaluate_pending_parallel.py`.

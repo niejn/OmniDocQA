@@ -11,7 +11,7 @@ FinanceRAG 是一个面向 SEC 风格金融披露文件的 RAG（Retrieval-Augme
 - **金融领域路由**：根据问题判断是否需要 SQL 财务事实、叙述性 RAG，或同时使用两者。
 - **财务事实增强**：查询 `sec_financial_observations` 中的 SEC company facts，并可根据 accession、指标等信息缩小 RAG 证据范围。
 - **上下文组装**：支持章节后代展开、相邻节点扩展、字符预算控制和标题匹配保障。
-- **可选重排序**：支持 Bocha reranker，以及面向叙述类问题的多维度重排序。
+- **可选重排序**：本地 Qwen3-Reranker CrossEncoder（`local_reranker.py`），以及面向叙述类问题的多维度重排序。
 - **可观测与评估**：可选接入 Langfuse 追踪，并通过 RAGAS 评估 faithfulness、context precision 等指标。
 - **前后端分离**：FastAPI 提供问答和数据接口，Next.js 提供用户交互界面。
 
@@ -305,7 +305,7 @@ uv run pytest tests/integration_tests
 | `CONTEXT_CHAR_BUDGET` | 上下文字符预算 |
 | `FINANCE_SQL_ROUTING_ENABLED` | 是否启用金融 SQL 路由 |
 | `FINANCE_SQL_NARROW_RAG_ENABLED` | 是否使用财务事实缩小 RAG 结果 |
-| `BOCHA_RERANKER_URL` | Bocha 重排序服务地址 |
+| `RERANKER_BACKEND` / `LOCAL_RERANKER_MODEL` / `RERANKER_TOP_N` | 本地重排序开关（local/none）/ 模型 / top n |
 | `LANGFUSE_ENABLED` / `RAGAS_ENABLED` | 追踪和评估开关 |
 
 ## 注意事项
