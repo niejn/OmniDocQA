@@ -1,4 +1,4 @@
-"""Multi-query Bocha rerank for narrative retrieval: merge scores across facet queries.
+"""Multi-query rerank for narrative retrieval: merge scores across facet queries.
 
 Keeps llamaindex_retrieval thin; all sub-query wording and merge policy live here.
 """
@@ -108,7 +108,6 @@ async def run_multi_query_rerank(
                 "query_preview": q.strip()[:240],
                 "mode": branch.get("mode"),
                 "candidates_out": branch.get("candidates_out"),
-                "remote_http_called": branch.get("remote_http_called"),
             }
         )
         for item in ranked:
@@ -126,7 +125,7 @@ async def run_multi_query_rerank(
     out_stats.clear()
     out_stats.update(
         {
-            "step": "bocha_rerank_multi",
+            "step": "rerank_multi",
             "subquery_count": len(qlist),
             "per_sub_top_n": per,
             "candidates_in": len(candidates),
@@ -134,7 +133,6 @@ async def run_multi_query_rerank(
             "merged_unique_before_trim": len(best_row),
             "sub_runs": sub_runs,
             "mode": sub_runs[-1].get("mode") if sub_runs else None,
-            "remote_http_called": any(s.get("remote_http_called") for s in sub_runs),
         }
     )
 

@@ -1,12 +1,12 @@
-"""Local sentence-transformers CrossEncoder reranker (Qwen3-Reranker), Bocha-parity interface.
+"""Local sentence-transformers CrossEncoder reranker (Qwen3-Reranker).
 
 Borrows the loading/scoring recipe from ``tools/qwen_reranker.py``:
 - optional BitsAndBytes 4bit/8bit quantization on CUDA (default ``none``, CPU-safe)
 - sigmoid activation over the model's yes/no logits as the relevance score
 
-Pairs are ``(query, text|text_preview)`` — same text extraction as ``BochaReranker``.
-Model load is lazy and cached; a failed load is remembered so unavailable
-requests escalate to the fallback reranker instead of retrying the load.
+Pairs are ``(query, text|text_preview)``. Model load is lazy and cached; a
+failed load is remembered so later requests truncate the fused order instead
+of retrying the load.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class LocalReranker:
         """True when a model instance is ready (injected or already loaded)."""
 
     def describe_config(self) -> dict[str, Any]:
-        """Runtime diagnostics for health/spec endpoints (mirrors BochaReranker)."""
+        """Runtime diagnostics for health/spec endpoints."""
         return {
             "backend": "local",
             "configured": True,
@@ -118,7 +118,7 @@ class LocalReranker:
         top_n: int,
         out_stats: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Score and re-order candidates (Bocha contract: rerank_score + stats mode)."""
+        """Score and re-order candidates (adds rerank_score; reports stats mode)."""
         stats = out_stats if out_stats is not None else {}
         stats.clear()
         stats.update(
@@ -137,8 +137,7 @@ class LocalReranker:
 
             model = self._model if self._model is not None else self._ensure_model()
             if model is None:
-                # Truncate-result + unavailable mode: the composite escalates to the
-                # fallback reranker when one exists, otherwise this order stands.
+                # Cannot score: truncate the fused order so candidates are never dropped.
                 out = candidates[:top_n]
                 stats.update(
                     {

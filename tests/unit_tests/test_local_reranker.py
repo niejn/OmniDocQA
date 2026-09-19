@@ -1,4 +1,4 @@
-"""Unit tests for the local CrossEncoder reranker and the composite/factory selection."""
+"""Unit tests for the local CrossEncoder reranker and the factory selection."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 from core.config import config
 from tools import rerank as rerank_module
 from tools.local_reranker import LocalReranker
-from tools.rerank import CompositeReranker, TruncateReranker, get_reranker
+from tools.rerank import TruncateReranker, get_reranker
 
 
 class FakeCrossEncoder:
@@ -46,7 +46,7 @@ def test_local_rerank_orders_by_score_and_respects_top_n():
     assert out[0]["rerank_score"] == pytest.approx(0.9)
     assert stats["mode"] == "local_success"
     assert stats["candidates_in"] == 3 and stats["candidates_out"] == 2
-    # text_preview is used when text is missing (Bocha text extraction parity).
+    # text_preview is used when text is missing.
     assert ("q", "beta preview") in fake.calls[0]
 
 
@@ -69,50 +69,16 @@ def test_local_rerank_predict_error_truncates_fusion_order():
     assert stats["fallback"] == "truncate_fusion_order"
 
 
-def _fake_backend(marker: str):
-    class FakeBackend:
-        def __init__(self) -> None:
-            self.called = False
-
-        def describe_config(self):
-            return {"backend": marker}
-
-        async def rerank(self, *, query, candidates, top_n, out_stats=None):
-            self.called = True
-            stats = out_stats if out_stats is not None else {}
-            stats.clear()
-            out = [dict(row, rerank_score=0.42) for row in candidates[:top_n]]
-            stats.update({"mode": "fake_success", "candidates_out": len(out)})
-            return out
-
-    return FakeBackend()
-
-
-def test_composite_escalates_when_local_model_unavailable():
+def test_local_model_unavailable_truncates_fusion_order():
     local = LocalReranker()
     local._load_error = "RuntimeError: no model"  # simulate a failed lazy load
-    fallback = _fake_backend("bocha-fake")
-    composite = CompositeReranker([local, fallback])
 
     stats: dict = {}
-    out = asyncio.run(
-        composite.rerank(query="q", candidates=_candidates(), top_n=3, out_stats=stats)
-    )
-    assert fallback.called is True
-    assert all(row["rerank_score"] == 0.42 for row in out)
+    out = asyncio.run(local.rerank(query="q", candidates=_candidates(), top_n=2, out_stats=stats))
+    assert [row["node_id"] for row in out] == ["a", "b"]
     assert stats["mode"] == "local_model_unavailable"
-    assert stats["escalated_to"] == "FakeBackend"
-    assert stats["fallback_stage"]["mode"] == "fake_success"
-
-
-def test_composite_prefers_local_when_available():
-    local = LocalReranker(model=FakeCrossEncoder({"alpha passage": 1.0}))
-    fallback = _fake_backend("bocha-fake")
-    composite = CompositeReranker([local, fallback])
-
-    out = asyncio.run(composite.rerank(query="q", candidates=_candidates(), top_n=3))
-    assert fallback.called is False
-    assert out[0]["node_id"] == "a"
+    assert stats["fallback"] == "truncate_fusion_order"
+    assert stats["error"] == "RuntimeError: no model"
 
 
 def test_truncate_reranker_disabled_mode():
@@ -126,18 +92,16 @@ def test_truncate_reranker_disabled_mode():
 
 
 @pytest.mark.parametrize(
-    ("backend", "first_type", "chain_len"),
+    ("backend", "expected_type"),
     [
-        ("bocha", rerank_module.BochaReranker, 1),
-        ("none", TruncateReranker, 1),
+        ("local", LocalReranker),
+        ("none", TruncateReranker),
     ],
 )
-def test_factory_backend_selection(backend: str, first_type: type, chain_len: int, monkeypatch):
+def test_factory_backend_selection(backend: str, expected_type: type, monkeypatch):
     get_reranker.cache_clear()
     monkeypatch.setattr(config, "reranker_backend", backend)
-    composite = get_reranker()
-    assert len(composite._chain) == chain_len
-    assert isinstance(composite._chain[0], first_type)
+    assert isinstance(get_reranker(), expected_type)
     get_reranker.cache_clear()
 
 
@@ -152,9 +116,7 @@ def test_warmup_loads_local_when_primary(monkeypatch):
             return True
 
     spy = SpyLocal(model=None)
-    monkeypatch.setattr(
-        rerank_module, "get_reranker", lambda: CompositeReranker([spy])
-    )
+    monkeypatch.setattr(rerank_module, "get_reranker", lambda: spy)
     asyncio.run(rerank_module.warmup_reranker())
     assert loaded.is_set() is True
 
@@ -169,22 +131,19 @@ def test_warmup_noop_when_local_not_primary(monkeypatch):
             loaded.set()
             return True
 
-    # backend=bocha -> chain[0] is BochaReranker, warmup must not touch local.
-    monkeypatch.setattr(config, "reranker_backend", "bocha")
+    # backend=none -> TruncateReranker, warmup must not touch the local model.
+    monkeypatch.setattr(config, "reranker_backend", "none")
     rerank_module.get_reranker.cache_clear()
     asyncio.run(rerank_module.warmup_reranker())
     assert loaded.is_set() is False
     rerank_module.get_reranker.cache_clear()
 
 
-def test_factory_local_default_includes_bocha_fallback(monkeypatch):
+def test_factory_local_default(monkeypatch):
     get_reranker.cache_clear()
     monkeypatch.setattr(config, "reranker_backend", "local")
-    monkeypatch.setattr(config, "bocha_reranker_url", "https://api.bocha.cn/v1/rerank")
-    monkeypatch.setattr(config, "bocha_api_key", "sk-test")
-    composite = get_reranker()
-    assert isinstance(composite._chain[0], LocalReranker)
-    assert isinstance(composite._chain[1], rerank_module.BochaReranker)
-    described = composite.describe_config()
-    assert described["backend"] == "local" and len(described["chain"]) == 2
+    reranker = get_reranker()
+    assert isinstance(reranker, LocalReranker)
+    described = reranker.describe_config()
+    assert described["backend"] == "local"
     get_reranker.cache_clear()

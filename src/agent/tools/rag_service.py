@@ -1582,8 +1582,8 @@ def _build_pipeline_trace(
             "combined_context_chars": int((sql_context_chars or 0) + (rag_context_chars or 0)),
         },
         "notes": [
-            "rerank.mode=remote_success 且 remote_http_called=true 表示已调用 Bocha HTTP；"
-            "skipped_not_configured 表示未配 URL/Key，仅用融合序截断。",
+            "rerank.mode=local_success 表示本地 CrossEncoder 打分排序成功；"
+            "local_model_unavailable 表示模型未加载成功，仅用融合序截断；skipped_disabled 表示 RERANKER_BACKEND=none。",
             "summary_sparse/leaf_sparse=0：OpenSearch 时多为稀疏索引无文档（切换 SPARSE_BACKEND 后需对该文档重新 ingest）；"
             "Postgres 时多为全文分词、level 过滤或 search_vector 无命中；"
             "Milvus(BM25) 时多为分词/analyzer 无命中或文档未以 DENSE_BACKEND=milvus 重新 ingest（text 随 dense 写入）。",
@@ -1737,6 +1737,12 @@ async def answer_question(
     include_full_retrieval_debug: bool = False,
     report_locale: str | None = None,
 ) -> dict[str, Any]:
+    # Multimodal-mode guard (design §4.3): the /ask pipeline depends on rag_nodes
+    # PG rows / section tree / sibling expansion, absent on the multimodal path.
+    if (config.dense_backend or "").strip().lower() == "milvus_multimodal":
+        raise ValueError(
+            "DENSE_BACKEND=milvus_multimodal 仅服务 /agent/api/documents; /ask 请切回 DENSE_BACKEND=milvus"
+        )
     await ensure_schema()
     request_started_at = time.perf_counter()
     trace_ctx = tracer.start_request(
@@ -1799,7 +1805,7 @@ async def answer_question(
 #   1. 混合检索(稠密 + 稀疏 + 重排)  ← 单次 retrieve 调用内部完成
 #      → retrieval_service.retrieve(query, ...)  (本函数内调用)
 #        · 内部顺序(见 llamaindex_retrieval 的 retrieve): query 向量化(OpenRouter)
-#          → 稠密检索(Qdrant) → 稀疏检索(Postgres/OpenSearch 全文) → RRF 融合 → bocha 重排。
+#          → 稠密检索(Qdrant) → 稀疏检索(Postgres/OpenSearch 全文) → RRF 融合 → 本地 CrossEncoder 重排。
 #   2. (可选) SQL 收窄 RAG 候选 → prioritize_nodes_by_sql_evidence(...)  (本函数内, 仅开关开启时)
 #   3. 上下文装配(兄弟节点扩展 / 字符预算截断)
 #   4. LLM 生成答案 → get_llm(model_name=config.default_model)  (本函数末尾, 调火山方舟 deepseek-v4-pro)
@@ -1901,7 +1907,7 @@ async def _answer_question_body(
                     "retrieval_soft_hints": retrieval_soft_hints,
                 },
             ) as retrieval_span:
-                # 阶段1: 混合检索 = 稠密(Qdrant) + 稀疏(Postgres/OpenSearch) + bocha 重排, 全部在 retrieve 内完成
+                # 阶段1: 混合检索 = 稠密(Qdrant) + 稀疏(Postgres/OpenSearch) + 本地 CrossEncoder 重排, 全部在 retrieve 内完成
                 retrieval = await retrieval_service.retrieve(
                     query=retrieve_query,
                     document_ids=document_ids,

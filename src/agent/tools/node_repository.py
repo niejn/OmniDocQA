@@ -97,6 +97,7 @@ async def ensure_schema() -> None:
                 query TEXT NOT NULL,
                 answer TEXT NOT NULL,
                 context_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                reference TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -104,6 +105,10 @@ async def ensure_schema() -> None:
                 finished_at TIMESTAMPTZ,
                 error TEXT
             );
+
+            -- R2 (docs/MULTIMODAL_MILVUS_MIGRATION.md §6.2): reference column on
+            -- pre-R2 deployments; NULL = reference-free metrics route.
+            ALTER TABLE rag_evaluation_jobs ADD COLUMN IF NOT EXISTS reference TEXT;
 
             CREATE INDEX IF NOT EXISTS idx_rag_nodes_document_id ON rag_nodes(document_id);
             CREATE INDEX IF NOT EXISTS idx_rag_nodes_parent_id ON rag_nodes(parent_id);
@@ -759,15 +764,18 @@ async def enqueue_evaluation_job(
     answer: str,
     context_json: list[dict[str, Any]],
     metadata: Optional[dict[str, Any]] = None,
+    reference: Optional[str] = None,
 ) -> str:
+    """Enqueue one evaluation job; ``reference`` (R2) routes the scorer to
+    reference-based metrics when present (NULL keeps the reference-free route)."""
     pool = await get_pool()
     job_id = str(uuid.uuid4())
     await pool.execute(
         """
         INSERT INTO rag_evaluation_jobs (
-            id, trace_id, document_ids, query, answer, context_json, metadata
+            id, trace_id, document_ids, query, answer, context_json, reference, metadata
         )
-        VALUES ($1::uuid, $2, $3::bigint[], $4, $5, $6::jsonb, COALESCE($7::jsonb, '{}'::jsonb))
+        VALUES ($1::uuid, $2, $3::bigint[], $4, $5, $6::jsonb, $7, COALESCE($8::jsonb, '{}'::jsonb))
         """,
         job_id,
         trace_id,
@@ -775,6 +783,7 @@ async def enqueue_evaluation_job(
         query,
         answer,
         json.dumps(context_json, ensure_ascii=False),
+        reference,
         json.dumps(metadata or {}, ensure_ascii=False),
     )
     return job_id
@@ -784,7 +793,7 @@ async def list_pending_evaluation_jobs(limit: int) -> list[dict[str, Any]]:
     pool = await get_pool()
     rows = await pool.fetch(
         """
-        SELECT id::text AS id, trace_id, document_ids, query, answer, context_json, metadata
+        SELECT id::text AS id, trace_id, document_ids, query, answer, context_json, reference, metadata
         FROM rag_evaluation_jobs
         WHERE status = 'pending'
         ORDER BY created_at ASC

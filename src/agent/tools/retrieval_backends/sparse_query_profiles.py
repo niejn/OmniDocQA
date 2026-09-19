@@ -144,7 +144,9 @@ def build_sparse_query_plan(
     # title^N/search_hints^N 是 OpenSearch 字段 boost，不能等价替代 k1/b。
     scope = (config.opensearch_sparse_search_scope or "finance").strip().lower()
     """
-    scope = (config.opensearch_sparse_search_scope or "finance").strip().lower()
+    # M5-prime removed OPENSEARCH_SPARSE_SEARCH_SCOPE from Config; read defensively
+    # so the finance profile stays the default instead of AttributeError-ing.
+    scope = (getattr(config, "opensearch_sparse_search_scope", None) or "finance").strip().lower()
     if scope == "exam":
         logger.warning(
             "[SparseQuery] OPENSEARCH_SPARSE_SEARCH_SCOPE=exam is removed; using finance profile"

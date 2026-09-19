@@ -41,7 +41,7 @@ class AskRequest(BaseModel):
     include_pipeline_trace: bool = Field(
         default=True,
         description="为 true 时返回 pipeline_trace：检索计数、retrieval_sparse_hits（sparse 各阶段 node_id）、"
-        "Bocha rerank、Langfuse 状态等",
+        "本地 rerank、Langfuse 状态等",
     )
     include_full_retrieval_debug: bool = Field(
         default=False,

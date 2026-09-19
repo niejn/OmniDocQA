@@ -1426,7 +1426,7 @@ class NodeHybridRetriever(BaseRetriever):
         #   1. 稠密检索(dense):  self.dense_backend.search(...)  → Qdrant 向量库
         #   2. 稀疏检索(sparse): self.sparse_backend.search(...) → Postgres/OpenSearch 全文
         #   3. 融合(fusion):     reciprocal_rank_fusion([dense, sparse]) → pre_rerank 候选池
-        #   4. 重排(rerank):     reranker.rerank(...)  (rerank.py 组合: 本地 CrossEncoder 默认, Bocha 远程回退)
+#   4. 重排(rerank):     reranker.rerank(...)  (rerank.py: 本地 CrossEncoder, 默认; RERANKER_BACKEND=none 可关闭)
         #   之后: post_rerank_selector → final_ranked → 兄弟节点扩展 → 返回 nodes。
         #   注意: 稠密=向量、稀疏=关键词全文, 二者在 retrieve 内融合; SQL 财务事实不在此处。
             if query_embedding is None:
@@ -1774,7 +1774,7 @@ class NodeHybridRetriever(BaseRetriever):
         # RRF only reconciles rankings from dense/sparse and section/leaf sources;
         # it is not the final relevance judgment. Narrative mode may run multiple
         # rerank subqueries (up to narrative_multi_rerank_max_queries).
-        rerank_keep = max(config.bocha_top_n, leaf_limit) if need_narrative else config.bocha_top_n
+        rerank_keep = max(config.reranker_top_n, leaf_limit) if need_narrative else config.reranker_top_n
         top_n_cap = min(rerank_keep, max(1, len(pre_rerank)))
         if need_narrative and bool(config.narrative_multi_rerank_enabled):
             subqs = narrative_rerank_subqueries(
@@ -1791,7 +1791,7 @@ class NodeHybridRetriever(BaseRetriever):
                 out_stats=rerank_stats,
             )
         else:
-            # 步骤4: bocha 重排(语义重排, 对 pre_rerank 候选重新打分排序) → final_ranked
+            # 步骤4: 语义重排(本地 CrossEncoder, 对 pre_rerank 候选重新打分排序) → final_ranked
             reranked = await reranker.rerank(
                 query=rerank_query,
                 candidates=pre_rerank,
@@ -1826,7 +1826,7 @@ class NodeHybridRetriever(BaseRetriever):
             final_ranked, narrative_inserted = _ensure_narrative_quota(
                 ranked=final_ranked,
                 fallback_pool=pre_rerank,
-                limit=min(config.bocha_top_n, max(1, len(final_ranked))),
+                limit=min(config.reranker_top_n, max(1, len(final_ranked))),
                 min_narrative=narrative_floor,
             )
             if narrative_inserted > 0:
@@ -1868,13 +1868,13 @@ class NodeHybridRetriever(BaseRetriever):
                     reranked_section = await reranker.rerank(
                         query=query,
                         candidates=pre_rerank,
-                        top_n=min(config.bocha_top_n, len(pre_rerank)),
+                        top_n=min(config.reranker_top_n, len(pre_rerank)),
                         out_stats=None,
                     )
-                    final_ranked = reranked_section if reranked_section else pre_rerank[: config.bocha_top_n]
+                    final_ranked = reranked_section if reranked_section else pre_rerank[: config.reranker_top_n]
                     final_ranked = _apply_filing_aware_limit(
                         final_ranked,
-                        limit=min(config.bocha_top_n, max(1, len(final_ranked))),
+                        limit=min(config.reranker_top_n, max(1, len(final_ranked))),
                         per_filing_cap=per_filing_cap,
                         bucket_caps={
                             "leaf": leaf_limit,

@@ -27,10 +27,21 @@ try:
     # Migrate to collections + llm_factory once in R3 (doc §6.3) together with the
     # renamed class (LLMContextPrecisionWithoutReference -> ContextPrecisionWithoutReference).
     from ragas.metrics import Faithfulness, LLMContextPrecisionWithoutReference
+    # R2 (doc §6.2): reference-based route. All three are LLM-only (no
+    # embeddings dependency — AnswerCorrectness/AnswerSimilarity wait for R3,
+    # which wires the embeddings client into the worker).
+    from ragas.metrics import (
+        FactualCorrectness,
+        LLMContextPrecisionWithReference,
+        LLMContextRecall,
+    )
 except ImportError:  # pragma: no cover
     SingleTurnSample = None
     Faithfulness = None
     LLMContextPrecisionWithoutReference = None
+    FactualCorrectness = None
+    LLMContextPrecisionWithReference = None
+    LLMContextRecall = None
 
 
 def _retrieved_context_texts(raw: Any) -> list[str]:
@@ -56,7 +67,14 @@ def _retrieved_context_texts(raw: Any) -> list[str]:
 
 
 async def _score_job(job: dict[str, Any]) -> dict[str, float]:
-    """Run RAGAS metrics (caller must ensure ragas is enabled and imports succeeded)."""
+    """Run RAGAS metrics (caller must ensure ragas is enabled and imports succeeded).
+
+    R2 metric routing (doc §6.2): jobs carrying a ``reference`` get the
+    reference-based panel (context_recall / context_precision_with_reference /
+    factual_correctness); reference-free jobs keep the legacy panel
+    (context_precision_without_reference). Faithfulness runs on both — it is
+    the constant cross-route baseline.
+    """
     if SingleTurnSample is None or Faithfulness is None or LLMContextPrecisionWithoutReference is None:
         raise RuntimeError("RAGAS metric classes not imported")
     llm = get_llm(
@@ -64,17 +82,29 @@ async def _score_job(job: dict[str, Any]) -> dict[str, float]:
         temperature=0.0,
         ragas_strip_json_fence=True,
     )
+    reference = str(job.get("reference") or "").strip()
     sample = SingleTurnSample(
         user_input=job["query"],
         response=job["answer"],
         retrieved_contexts=_retrieved_context_texts(job.get("context_json")),
+        reference=reference or None,
     )
-    faithfulness = Faithfulness(llm=llm)
-    context_precision = LLMContextPrecisionWithoutReference(llm=llm)
-    return {
-        "faithfulness": float(await faithfulness.single_turn_ascore(sample)),
-        "context_precision": float(await context_precision.single_turn_ascore(sample)),
+    scores: dict[str, float] = {
+        "faithfulness": float(await Faithfulness(llm=llm).single_turn_ascore(sample)),
     }
+    if reference:
+        scores["context_precision_with_reference"] = float(
+            await LLMContextPrecisionWithReference(llm=llm).single_turn_ascore(sample)
+        )
+        scores["context_recall"] = float(await LLMContextRecall(llm=llm).single_turn_ascore(sample))
+        scores["factual_correctness"] = float(
+            await FactualCorrectness(llm=llm).single_turn_ascore(sample)
+        )
+    else:
+        scores["context_precision"] = float(
+            await LLMContextPrecisionWithoutReference(llm=llm).single_turn_ascore(sample)
+        )
+    return scores
 
 
 async def run_pending_evaluations(limit: int | None = None) -> dict[str, Any]:
