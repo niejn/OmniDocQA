@@ -466,6 +466,9 @@ export default function HomePage() {
               <div className="flex items-center justify-between">
                 <h1 className="text-base font-semibold text-zinc-900">{t.title}</h1>
                 <div className="flex items-center gap-2">
+                  <a className="text-sm text-sky-600 underline" href="/documents">
+                    多模态文档库
+                  </a>
                   <Button variant={language === "en" ? "default" : "outline"} size="sm" onClick={() => setLanguage("en")}>
                     英文
                   </Button>
