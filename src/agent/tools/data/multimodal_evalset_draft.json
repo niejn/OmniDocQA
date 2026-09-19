@@ -1,0 +1,380 @@
+{
+  "version": "t2.5-draft-1",
+  "generator": {
+    "model": "openai/glm-5.3-flash",
+    "seed": 20260918,
+    "ratio": [
+      0.6,
+      0.3,
+      0.1
+    ]
+  },
+  "counts": {
+    "total": 12,
+    "single_hop": 7,
+    "aggregation": 4,
+    "cross_book": 1,
+    "leak_suspect": 6
+  },
+  "questions": [
+    {
+      "type": "single_hop",
+      "question": "探讨自然语言是非题出人意料之难的数据集 BoolQ，其论文发表在哪个会议（含年份）？",
+      "reference": "Clark 的论文《Boolq: Exploring the surprising difficulty of natural yes/no questions》发表于 2019 年的 NAACL 会议。",
+      "gold_chunk_ids": [
+        "4bccff44-069f-4ec6-862b-bec4fc368ec3"
+      ],
+      "scope": {
+        "book_id": "PEFT 论文",
+        "chapter_document_id": 9913
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "4bccff44-069f-4ec6-862b-bec4fc368ec3",
+          "book_id": "PEFT 论文",
+          "page_no": 2
+        }
+      ],
+      "leak_suspect": false,
+      "leak_chunk_ids": []
+    },
+    {
+      "type": "single_hop",
+      "question": "在Lambda架构时期，企业要完成实时计算通常使用哪个计算框架？",
+      "reference": "片段中提到，在Lambda架构时期，完成离线计算需要使用Hive、MapReduce离线计算框架，而完成实时计算需要使用Storm实时计算框架。",
+      "gold_chunk_ids": [
+        "072e4fe9-83f7-416a-99a9-f0cc8d5dfce7"
+      ],
+      "scope": {
+        "book_id": "第一章 Apache Flink 概述",
+        "chapter_document_id": 9901
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "072e4fe9-83f7-416a-99a9-f0cc8d5dfce7",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 7
+        }
+      ],
+      "leak_suspect": false,
+      "leak_chunk_ids": []
+    },
+    {
+      "type": "single_hop",
+      "question": "Infoprompt 这篇面向自然语言理解的软提示调优论文，其 arXiv 预印本编号是多少？",
+      "reference": "Infoprompt 是 2023 年发表的关于自然语言理解的信息论软提示调优工作，其 arXiv 预印本编号为 arXiv:2306.04933。",
+      "gold_chunk_ids": [
+        "14656056-a1f3-4fed-b5f2-e99b50b7fef7"
+      ],
+      "scope": {
+        "book_id": "PEFT 论文",
+        "chapter_document_id": 9913
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "14656056-a1f3-4fed-b5f2-e99b50b7fef7",
+          "book_id": "PEFT 论文",
+          "page_no": 5
+        }
+      ],
+      "leak_suspect": true,
+      "leak_chunk_ids": [
+        "14656056-a1f3-4fed-b5f2-e99b50b7fef7"
+      ]
+    },
+    {
+      "type": "single_hop",
+      "question": "Apache Flink 从哪个版本开始不再支持 Flink on Mesos 资源调度？",
+      "reference": "Flink 1.14.0 版本于 2021-09-29 发布，该版本改进了批和流的状态管理机制、优化了 checkpoint 机制，不再支持 Flink on Mesos 资源调度，并开始支持资源细粒度管理。",
+      "gold_chunk_ids": [
+        "2fea12e0-06f8-4ea3-b036-f241083bee8d"
+      ],
+      "scope": {
+        "book_id": "第一章 Apache Flink 概述",
+        "chapter_document_id": 9901
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "2fea12e0-06f8-4ea3-b036-f241083bee8d",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 4
+        }
+      ],
+      "leak_suspect": true,
+      "leak_chunk_ids": [
+        "2fea12e0-06f8-4ea3-b036-f241083bee8d"
+      ]
+    },
+    {
+      "type": "single_hop",
+      "question": "在参数高效微调（PEFT）方法的分类体系中，LoRA 被划分到哪一大类微调方法下？",
+      "reference": "根据 PEFT 论文中的方法分类，LoRA 被归入重参数化微调（Reparameterized Fine-tuning）大类，具体属于其中的低秩分解（Low-rank Decomposition）子类，与 Compacter、KronA、DoRA 等方法并列。",
+      "gold_chunk_ids": [
+        "4b359f8f-39e9-4dcf-9941-1bbbdbd4a9e6"
+      ],
+      "scope": {
+        "book_id": "PEFT 论文",
+        "chapter_document_id": 9911
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "4b359f8f-39e9-4dcf-9941-1bbbdbd4a9e6",
+          "book_id": "PEFT 论文",
+          "page_no": 4
+        }
+      ],
+      "leak_suspect": false,
+      "leak_chunk_ids": []
+    },
+    {
+      "type": "single_hop",
+      "question": "早期 Stratosphere 项目核心成员共同创办的 Data Artisans 公司，最终是被哪家公司收购的？",
+      "reference": "2019年，阿里巴巴收购了Data Artisans公司，并将其开发的分支Blink开源。",
+      "gold_chunk_ids": [
+        "d9cccaad-add5-4069-a4b5-4ce69121f6c3"
+      ],
+      "scope": {
+        "book_id": "第一章 Apache Flink 概述",
+        "chapter_document_id": 9901
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "d9cccaad-add5-4069-a4b5-4ce69121f6c3",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 2
+        }
+      ],
+      "leak_suspect": true,
+      "leak_chunk_ids": [
+        "d9cccaad-add5-4069-a4b5-4ce69121f6c3"
+      ]
+    },
+    {
+      "type": "single_hop",
+      "question": "RoFormer 这篇论文是通过引入哪种位置编码技术来增强 Transformer 的？",
+      "reference": "根据 PEFT 论文参考文献 [165]，Su 等人于 2021 年提出的 RoFormer（arXiv 预印本编号 2104.09864）是一种通过旋转位置编码（rotary position embedding）来增强的 Transformer 模型。",
+      "gold_chunk_ids": [
+        "092de2dc-0f24-4592-b272-238fc9944e6c"
+      ],
+      "scope": {
+        "book_id": "PEFT 论文",
+        "chapter_document_id": 9913
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "092de2dc-0f24-4592-b272-238fc9944e6c",
+          "book_id": "PEFT 论文",
+          "page_no": 5
+        }
+      ],
+      "leak_suspect": true,
+      "leak_chunk_ids": [
+        "092de2dc-0f24-4592-b272-238fc9944e6c"
+      ]
+    },
+    {
+      "type": "aggregation",
+      "question": "《PEFT 论文》介绍了多项提升大语言模型参数高效微调在推理与训练阶段效率的技术。请分三部分回答：(1) 列举论文中提到的两种降低模型权重表示精度的方法名称，并分别写出两种方法将权重压缩到的位宽以及核心机制；(2) 列举论文中提出的面向多任务推理部署的服务框架名称，写出框架将不同PEFT任务转化成的计算形式，以及框架在批处理和调度两方面分别采用的策略；(3) 列举论文中给出的跨不同骨干大模型进行联合微调的算法名称，列出算法的全部输入要素，并说明算法在正式微调开始前执行的操作与记录的统计量。",
+      "reference": "QA-LoRA：采用INT4量化并引入分组算子（group-wise operators），使量化可在推理阶段进行，相比QLoRA同时提升效率与准确率；BitDelta：一种1比特（1-bit）训练后量化方法，作用于微调模型与基础预训练模型之间的权重增量，将Δ=Wfine−Wbase二值化为Δ̂=α·Sign(Δ)，其中α为高精度标量；PetS：管理多个PEFT任务的统一服务框架，核心是将不同PEFT任务转化为集成的计算内核以提升效率，并提出编排式批处理方法提升系统吞吐、调度方法利用任务并行性；KR算法（简化版）：输入包括LLM模块池F、总层数L、选择标准ϵ、总微调轮数E；预调优阶段先对F内所有PEFT模块微调若干迭代以收集统计信息，并记录每个模块l2范数的变化",
+      "gold_chunk_ids": [
+        "38899fb6-63ec-4587-857b-c5f02e352cf1",
+        "0298d47e-9486-4f80-bee4-df63d8bf7d7e",
+        "38244636-bb6d-483d-9588-470c2320b2ca"
+      ],
+      "scope": {
+        "book_id": "PEFT 论文",
+        "chapter_document_id": 9912
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "38899fb6-63ec-4587-857b-c5f02e352cf1",
+          "book_id": "PEFT 论文",
+          "page_no": 1
+        },
+        {
+          "chunk_id": "0298d47e-9486-4f80-bee4-df63d8bf7d7e",
+          "book_id": "PEFT 论文",
+          "page_no": 7
+        },
+        {
+          "chunk_id": "38244636-bb6d-483d-9588-470c2320b2ca",
+          "book_id": "PEFT 论文",
+          "page_no": 6
+        }
+      ],
+      "leak_suspect": false,
+      "leak_chunk_ids": []
+    },
+    {
+      "type": "aggregation",
+      "question": "请从数据处理方式、开发接口、SQL支持三个维度对比Flink与Storm、SparkStreaming（含StructuredStreaming）的区别，并按发布时间顺序分别列出Flink 1.10.0、1.11.0、1.12.0三个重要版本各自包含的主要特性。",
+      "reference": "数据处理方式：Storm和Flink是逐条处理数据，SparkStreaming是微批处理（一次处理一批小批量数据），StructuredStreaming既支持微批处理也支持连续处理（Continuous，尚处实验性），实时性不如Flink；开发接口：Storm仅提供基础API，实现简单的sum求和需自行编写大量业务逻辑，SparkStreaming、StructuredStreaming和Flink均提供封装后的高阶函数，可直接使用；SQL支持：早期Storm不支持SQL（最新版本已支持），SparkStreaming不支持SQL，StructuredStreaming支持SQL；Flink 1.10.0（2020-02-11）：整合Blink全部完成、集成K8S、PyFlink优化、内存管理配置优化；Flink 1.11.0（2020-07-06）：Blink planner成为Table API/SQL默认设置（仍支持旧Flink planner）、支持Flink CDC、支持Hadoop 3.x（不再提供flink-shaded-hadoop-x jars，需通过HADOOP_CLASSPATH环境变量或lib/目录提供Hadoop依赖）；Flink 1.12.0（2020-12-08）：DataStream API上添加高效的批执行模式支持，是批处理和流处理真正统一运行时的重要里程碑",
+      "gold_chunk_ids": [
+        "14abc657-7003-4b3d-9f87-11385582a45a",
+        "fb57a4b6-5d05-4ab0-adb1-587d41acfccf",
+        "394b51e6-75ed-4a94-b617-94030aaf26ec"
+      ],
+      "scope": {
+        "book_id": "第一章 Apache Flink 概述",
+        "chapter_document_id": 9901
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "14abc657-7003-4b3d-9f87-11385582a45a",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 12
+        },
+        {
+          "chunk_id": "fb57a4b6-5d05-4ab0-adb1-587d41acfccf",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 3
+        },
+        {
+          "chunk_id": "394b51e6-75ed-4a94-b617-94030aaf26ec",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 3
+        }
+      ],
+      "leak_suspect": true,
+      "leak_chunk_ids": [
+        "14abc657-7003-4b3d-9f87-11385582a45a",
+        "fb57a4b6-5d05-4ab0-adb1-587d41acfccf"
+      ]
+    },
+    {
+      "type": "aggregation",
+      "question": "根据《PEFT 论文》，请分条回答：(1) 在 PetS 框架中，开发者通过标准化应用程序编程接口注册 PEFT 任务后，需要提供哪三项内容？(2) 《PEFT 论文》参考文献中，提出参数高效 transformers 统一服务框架的论文由哪四位作者撰写？(3) 《PEFT 论文》参考文献中，主张序列建模能让大规模视觉模型实现可扩展学习的论文，arXiv 编号和发表年份分别是什么？",
+      "reference": "要点1：预训练模型标签（Pre-Trained Model Tag，如 LLaMA）；压缩格式的 PEFT 参数；具体的 PEFT 算法（如 LoRA、Adapter、Bitfit）；要点2：Zhou, Z.、Wei, X.、Zhang, J.、Sun, G.（PetSu 论文作者）；要点3：arXiv 编号 2312.00785，发表年份 2023（Bai 等）",
+      "gold_chunk_ids": [
+        "259b51b6-3001-41ec-b386-71a5eaad6d95",
+        "1cb7210a-4b38-43d6-88f0-69045874ee99",
+        "3d0674bd-bf37-40e0-a697-9c665096017c"
+      ],
+      "scope": {
+        "book_id": "PEFT 论文",
+        "chapter_document_id": 9913
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "259b51b6-3001-41ec-b386-71a5eaad6d95",
+          "book_id": "PEFT 论文",
+          "page_no": 6
+        },
+        {
+          "chunk_id": "1cb7210a-4b38-43d6-88f0-69045874ee99",
+          "book_id": "PEFT 论文",
+          "page_no": 1
+        },
+        {
+          "chunk_id": "3d0674bd-bf37-40e0-a697-9c665096017c",
+          "book_id": "PEFT 论文",
+          "page_no": 7
+        }
+      ],
+      "leak_suspect": true,
+      "leak_chunk_ids": [
+        "259b51b6-3001-41ec-b386-71a5eaad6d95"
+      ]
+    },
+    {
+      "type": "aggregation",
+      "question": "请综合《第一章 Apache Flink 概述》的内容回答：(1) Apache Flink从0.6到1.9.0的版本发展过程中有哪些重要时间节点及对应的代表性功能？阿里巴巴与Flink生态之间发生过哪些标志性事件？(2) 企业业务系统从单一整体应用演进为由多个独立小服务组成后，给数据的统一管理带来了什么新问题？企业开展批量分析时需要经过怎样的数据处理流程？不同阶段分别采用哪些存储技术？(3) Apache Flink在企业中有哪些典型应用方向？各方向分别发挥什么作用、带来什么价值？",
+      "reference": "要点1（片段1）：2014-08-26 Flink 0.6发布；2014-11-04 Flink 0.7.0推出Streaming API；2016-03-08 Flink 1.0.0流处理基础功能完善、支持Scala；2016-2018年陆续发布1.1.0至1.7.0，其中1.6.0支持状态TTL并增强SQL和Table API，1.7.0支持Scala 2.12、S3文件处理、Kafka 2.0 connector；2019-04-09 Flink 1.8.0支持TTL清除旧状态、不再支持Hadoop二进制文件；2019-08-22 Flink 1.9.0发布；要点2（片段1）：2019年1月阿里巴巴以9000万欧元收购Data Artisans公司并开发内部版本Blink，2019年8月阿里巴巴开源Blink；要点3（片段2）：微服务架构核心思想是应用由多个小的、相互独立的微服务组成，各自运行在独立进程并使用独立数据库，解决了业务系统扩展问题，但导致业务交易数据分散在不同系统中、难以集中化管理；要点4（片段2）：业务系统主要承载OLTP事务操作，企业进行OLAP分析或数据挖掘时需从不同数据库周期性抽取并同步数据到数据仓库，经统一规范的清洗分析处理后提供给数据集市和应用；早期数据仓库基于关系型数据库（MySQL、Oracle），数据量增长后无法支撑海量数据存储与分析，转而基于大数据技术（Hadoop HDFS、Hive）构建；要点5（片段3）：实时反欺诈：毫秒内完成欺诈行为指标计算，实时对交易流水做规则判断或模型预测，一旦发现欺诈嫌疑即实时拦截交易，避免处理不及时造成的经济损失；要点6（片段3）：实时数仓与ETL：对流式数据进行实时清洗、归并、结构化处理，补充和优化离线数仓，并利用有状态流式计算降低离线计算调度逻辑复杂度，高效产出统计结果；要点7（片段3）：流数据分析：实时计算各类指标并据此调整在线系统策略，应用于内容投放、无线智能推送，可分析Web/App各项指标（如App版本分布、Crash检测和分布），支持多维度用户行为分析与日志自主分析，助力精细化运营；要点8（片段3）：实时报表分析：近年来很多公司采用的报表统计方案",
+      "gold_chunk_ids": [
+        "e261d0da-5c94-454f-a49e-4fad1cb964d1",
+        "6dd73197-48f9-4f24-87d7-a1e5445d26c2",
+        "e47a059f-6a65-4f2f-82c0-5c6f8a887a47"
+      ],
+      "scope": {
+        "book_id": "第一章 Apache Flink 概述",
+        "chapter_document_id": 9901
+      },
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "e261d0da-5c94-454f-a49e-4fad1cb964d1",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 3
+        },
+        {
+          "chunk_id": "6dd73197-48f9-4f24-87d7-a1e5445d26c2",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 6
+        },
+        {
+          "chunk_id": "e47a059f-6a65-4f2f-82c0-5c6f8a887a47",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 11
+        }
+      ],
+      "leak_suspect": false,
+      "leak_chunk_ids": []
+    },
+    {
+      "type": "cross_book",
+      "question": "在《PEFT 论文》与《第一章 Apache Flink 概述》中，PEFT 技术与 Apache Flink 框架均被介绍为通过降低资源开销来提升方案可行性与稳定性的技术。请分别回答：（1）在《PEFT 论文》中，PEFT 针对传统全模型微调的什么问题，为使用者带来什么好处？（2）在《第一章 Apache Flink 概述》中，Apache Flink 通过什么机制降低内存与垃圾回收相关的风险，从而比其他分布式处理框架更稳定？（3）概括两者在“降低资源开销、提升可用性”这一目标上的共同思路。",
+      "reference": "《PEFT 论文》：在大模型与大数据时代，传统全模型微调（full-model fine-tuning）往往给普通用户带来难以承受的计算与数据需求；PEFT 作为参数高效微调方法，能够以更低的计算与数据开销高效地将模型适配到下游任务，因此对普通用户极具吸引力。\n《第一章 Apache Flink 概述》：Flink 通过序列化/反序列化方法将所有数据对象转换成二进制存储在内存中，在降低数据存储大小的同时更有效地利用内存空间，从而降低 JVM GC 带来的性能下降或任务异常风险；因此 Flink 较其他分布式处理框架更加稳定，不会因 GC 等问题影响整个应用的运行。\n共同点：两者都通过降低资源占用（PEFT 降低计算与数据需求，Flink 降低内存占用与 GC 风险）来克服传统方案或同类框架的局限，分别提升了普通用户适配大模型的可行性与流式应用生产运行的稳定性。",
+      "gold_chunk_ids": [
+        "1881464f-5450-4034-954a-7d67ef9cde68",
+        "72ecbb5b-aad1-49a2-93be-1d4fa2105c84"
+      ],
+      "scope": {
+        "book_id": null,
+        "chapter_document_id": null
+      },
+      "scope_books": [
+        "PEFT 论文",
+        "第一章 Apache Flink 概述"
+      ],
+      "gold_kinds": [
+        "text"
+      ],
+      "provenance": [
+        {
+          "chunk_id": "1881464f-5450-4034-954a-7d67ef9cde68",
+          "book_id": "PEFT 论文",
+          "page_no": 0
+        },
+        {
+          "chunk_id": "72ecbb5b-aad1-49a2-93be-1d4fa2105c84",
+          "book_id": "第一章 Apache Flink 概述",
+          "page_no": 9
+        }
+      ],
+      "leak_suspect": false,
+      "leak_chunk_ids": []
+    }
+  ]
+}

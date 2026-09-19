@@ -125,8 +125,40 @@ services:
       milvus:
         condition: service_healthy
 
+  # ---- rag-minio (multimodal asset store, phase 2; docs/MULTIMODAL_RAG_PART2_DESIGN.md §6/§11) ----
+  # Deliberately independent of the milvus-internal minio and langfuse's minio (different lifecycles).
+  # Host 9002/9003 (9000/9090 are taken by other local stacks). Switch via MULTIMODAL_ASSET_STORE=minio.
+  rag-minio:
+    # RELEASE.2025-07-23T15-54-02Z = newest tag actually published to docker.io.
+    # The two later GitHub releases (2025-09-07 / 2025-10-15, the final community
+    # release with a STS CVE fix) ship SOURCE ONLY ("clone and build", see their
+    # release bodies) — no prebuilt image exists anywhere for them. Pulled via the
+    # public Huawei DDN proxy (plain docker pull worked; CN accelerators all 403):
+    #   swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/minio/minio:<tag>
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    container_name: rag-minio
+    environment:
+      MINIO_ROOT_USER: ${RAG_MINIO_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${RAG_MINIO_PASSWORD:-minioadmin}
+    volumes:
+      - rag_minio_data:/data
+    command: minio server /data --console-address ":9001"
+    ports:
+      - "${RAG_MINIO_HOST_PORT:-9002}:9000"
+      - "${RAG_MINIO_CONSOLE_HOST_PORT:-9003}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
 volumes:
   rag_pg_data:
   rag_milvus_etcd_data:
   rag_milvus_minio_data:
   rag_milvus_data:
+  rag_minio_data:

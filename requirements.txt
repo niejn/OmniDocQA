@@ -18,6 +18,8 @@ pymilvus>=2.5,<3
 openai>=1.0
 numpy>=1.26
 PyMuPDF>=1.23
+# Phase-2 multimodal asset store (MULTIMODAL_ASSET_STORE=minio; local store needs none of this)
+minio>=7.2
 pdfplumber>=0.10
 python-docx>=1.1
 chardet>=5.2
@@ -29,6 +31,10 @@ ragas @ git+https://github.com/explodinggradients/ragas@fc0d071c80d240ce3a19a093
 # pyarrow 24 crashes natively (access violation) on Windows/Py3.13 inside this stack;
 # 18.1 lacks pyarrow.json_ used by the datasets chain — 21.0.0 is the verified window.
 pyarrow==21.0.0
+# CUDA torch pinned to local whl (mirrors pyproject.toml): PyPI Windows wheels are
+# CPU-only and would silently replace GPU inference. torchaudio unused in this repo.
+torch @ file:///C:/Users/julien/Downloads/torch-2.12.1+cu132-cp313-cp313-win_amd64.whl
+torchvision @ file:///C:/Users/julien/Downloads/torchvision-0.27.1+cu132-cp313-cp313-win_amd64.whl
 sentence-transformers>=4.1.0
 transformers>=4.51.0
 bitsandbytes>=0.46.0

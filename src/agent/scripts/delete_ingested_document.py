@@ -30,9 +30,38 @@ async def _delete_pg(document_id: int) -> int:
 
 
 async def _delete_one(document_id: int, *, skip_pg: bool) -> dict:
+    # Detect multimodal documents BEFORE deleting the PG row (metadata is the fact source).
+    is_multimodal = False
+    if not skip_pg:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            meta = await conn.fetchval(
+                "SELECT metadata->>'source' FROM rag_documents WHERE id = $1", document_id
+            )
+        is_multimodal = meta == "multimodal_pdf"
+
     deleted_pg = None
     if not skip_pg:
         deleted_pg = await _delete_pg(document_id)
+
+    if is_multimodal:
+        # Multimodal cascade (§20.1): Milvus points → PG row → assets. Each step
+        # idempotent; the sparse/dense rag_nodes paths below don't apply (no
+        # rag_nodes rows exist for multimodal documents).
+        from tools.retrieval_backends.dense_milvus_multimodal import (
+            MilvusMultimodalDenseBackend,
+        )
+
+        MilvusMultimodalDenseBackend().replace_document_nodes(document_id)
+        from tools.multimodal_asset_store import get_asset_store
+
+        get_asset_store().delete_document(document_id)
+        return {
+            "document_id": document_id,
+            "deleted_pg_rows": deleted_pg,
+            "multimodal_deleted": True,
+            "assets_deleted": True,
+        }
 
     # Dense backend (milvus-only since M5; deletion removes the shared rows)
     from tools.retrieval_backends.dense_milvus import MilvusDenseBackend
@@ -50,6 +79,8 @@ async def _delete_one(document_id: int, *, skip_pg: bool) -> dict:
         from tools.retrieval_backends.sparse_postgres import PostgresSparseBackend
 
         await PostgresSparseBackend().replace_document_nodes(document_id, [])
+    elif sparse_backend_name == "none":
+        pass  # multimodal mode: nothing to clean on the sparse path
     else:
         raise ValueError(f"Unsupported sparse backend: {config.sparse_backend!r}")
 

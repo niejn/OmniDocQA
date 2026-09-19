@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Node-centric RAG API",
-    description="Node-based ingestion, LlamaIndex retrieval, Bocha rerank, Langfuse tracing",
+    description="Node-based ingestion, LlamaIndex retrieval, local CrossEncoder rerank, Langfuse tracing",
     version="2.0.0",
 )
 
@@ -65,6 +65,11 @@ from tools.asks.ask_api import router as ask_router
 
 agent_router.include_router(ask_router)
 
+from tools.documents.document_api import router as documents_router
+from tools.documents.document_repository import ensure_sets_table
+
+agent_router.include_router(documents_router)
+
 from tools.leads.leads_api import router as leads_router
 
 agent_router.include_router(leads_router)
@@ -74,6 +79,7 @@ agent_router.include_router(leads_router)
 async def startup_event():
     try:
         await ensure_schema()
+        await ensure_sets_table()
     except Exception as exc:
         logger.error(
             "PostgreSQL connection failed (host=%s port=%s db=%s). "
@@ -91,10 +97,16 @@ async def startup_event():
             "to match compose, not 5432.)"
         ) from exc
     logger.info(
-        "Pipeline: reranker=%s langfuse=%s",
+        "Pipeline: reranker=%s langfuse=%s dense=%s sparse=%s",
         reranker.describe_config(),
         tracer.diagnostics(),
+        config.dense_backend,
+        config.sparse_backend,
     )
+    if (config.dense_backend or "").lower() == "milvus_multimodal":
+        logger.warning(
+            "DENSE_BACKEND=milvus_multimodal is active: /ask is guarded off; use /agent/api/documents"
+        )
     # Warm the local reranker in the background so the first ask request
     # doesn't pay the model-load latency (~13s for the 4B model).
     asyncio.create_task(warmup_reranker())
@@ -143,7 +155,7 @@ async def health_check():
         "allowed_origins": ALLOWED_ORIGINS,
         "langfuse_enabled": config.langfuse_enabled,
         "langgraph_planner_enabled": config.enable_langgraph_planner,
-        "bocha_rerank": reranker.describe_config(),
+        "reranker": reranker.describe_config(),
         "langfuse_client": tracer.diagnostics(),
     }
 
@@ -152,7 +164,7 @@ async def health_check():
 async def pipeline_observability():
     """各步骤配置与 Langfuse 客户端状态（不含密钥）；用于确认 rerank / 追踪是否就绪。"""
     return {
-        "bocha_rerank": reranker.describe_config(),
+        "reranker": reranker.describe_config(),
         "langfuse": tracer.diagnostics(),
         "langfuse_env_flag": config.langfuse_enabled,
         "langgraph_planner": config.enable_langgraph_planner,
