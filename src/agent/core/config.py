@@ -70,6 +70,13 @@ class Config(BaseSettings):
     dense_backend: str = Field(default="milvus")  # env: DENSE_BACKEND
     # Sparse (BM25) backend: milvus only (opensearch removed at M5-prime, 2026-09-15).
     sparse_backend: str = Field(default="milvus")  # env: SPARSE_BACKEND
+    # Hybrid fusion sink (1C): "app" = application-level RRF (rrf_scores,
+    # k=60) over separate dense/sparse searches — the long-standing default;
+    # "milvus" = server-side RRF via MilvusClient.hybrid_search + RRFRanker(k=60),
+    # one round-trip per branch. milvus mode needs DENSE_BACKEND=milvus AND
+    # SPARSE_BACKEND=milvus (both fields live on the shared rag_nodes rows);
+    # any other backend pair falls back to app fusion with a log line.
+    fusion_backend: str = Field(default="app")  # env: FUSION_BACKEND; app | milvus
 
     milvus_uri: str = Field(default="http://127.0.0.1:19530")  # env: MILVUS_URI
     milvus_user: str | None = Field(default=None)  # env: MILVUS_USER
@@ -249,6 +256,11 @@ class Config(BaseSettings):
     multimodal_asset_store: str = Field(default="local")  # env: MULTIMODAL_ASSET_STORE; local | minio(phase 2)
     multimodal_collection: str = Field(default="rag_multimodal")  # env: MULTIMODAL_COLLECTION
     multimodal_pages_dir: str = Field(default="tools/data/multimodal_pages")  # env: MULTIMODAL_PAGES_DIR
+    # Upload limits enforced by BOTH the CLI and POST /agent/api/documents/upload (§16).
+    multimodal_upload_max_mb: int = Field(default=200)  # env: MULTIMODAL_UPLOAD_MAX_MB
+    multimodal_upload_max_pages: int = Field(default=500)  # env: MULTIMODAL_UPLOAD_MAX_PAGES
+    # Whitelist directory for generated testsets / eval reports (T2.6 upload+eval API).
+    multimodal_eval_dir: str = Field(default="tools/data/multimodal_eval")  # env: MULTIMODAL_EVAL_DIR
     # Phase-2 MinIO asset store (independent lifecycle: NOT milvus's internal minio / langfuse's).
     minio_endpoint: str = Field(default="127.0.0.1:9002")  # env: MINIO_ENDPOINT
     minio_access_key: str = Field(default="minioadmin")  # env: MINIO_ACCESS_KEY
@@ -260,6 +272,11 @@ class Config(BaseSettings):
     ragas_enabled: bool = Field(default=False)  # env: RAGAS_ENABLED
     ragas_llm_model: str = Field(default="deepseek/deepseek-chat")  # env: RAGAS_LLM_MODEL
     ragas_batch_size: int = Field(default=20)  # env: RAGAS_BATCH_SIZE
+    # R3: when true, reference-bearing evaluation jobs additionally run the
+    # embedding-based RAGAS metrics (answer_correctness / answer_similarity /
+    # answer_relevancy) using the text-embedding provider from EMBEDDING_PROVIDER /
+    # EMBEDDING_MODEL. Client construction failure degrades to the 4 LLM metrics.
+    eval_embeddings_metrics_enabled: bool = Field(default=False)  # env: EVAL_EMBEDDINGS_METRICS_ENABLED
 
     cors_allowed_origins: str = Field(default="http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173")  # env: CORS_ALLOWED_ORIGINS
 

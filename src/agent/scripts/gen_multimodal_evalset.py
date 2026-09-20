@@ -39,23 +39,25 @@ if str(AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(AGENT_ROOT))
 
 DEFAULT_OUTPUT = Path("tools/data/multimodal_evalset_draft.json")
+DEFAULT_MODEL = "openai/glm-5.3-flash"
 _NGRAM = 8  # character n-gram for the leak self-check (Chinese-friendly)
 
 
-def load_chunks(limit_per_book: int = 60) -> list[dict]:
-    """Read text/image chunks from rag_multimodal via Milvus query."""
+def load_chunks(limit_per_book: int = 60, collection: str | None = None) -> list[dict]:
+    """Read text/image chunks from a multimodal collection via Milvus query.
+
+    ``collection`` defaults to ``config.multimodal_collection`` (CLI behavior);
+    the testset-generation API passes the caller's dynamic collection through.
+    """
     from core.config import config
     from tools.milvus_store import get_client
-    from tools.retrieval_backends.dense_milvus_multimodal import (
-        MilvusMultimodalDenseBackend,
-    )
 
-    MilvusMultimodalDenseBackend()  # import surface parity with the retrieval path
+    target = (collection or config.multimodal_collection or "").strip()
     client = get_client()
-    if not client.has_collection(config.multimodal_collection):
-        raise SystemExit(f"collection {config.multimodal_collection!r} missing; ingest first")
+    if not client.has_collection(target):
+        raise SystemExit(f"collection {target!r} missing; ingest first")
     rows = client.query(
-        collection_name=config.multimodal_collection,
+        collection_name=target,
         filter="document_id > 0",
         output_fields=[
             "document_id", "filename", "title", "kind", "page_no",
@@ -190,11 +192,6 @@ def _parse_json_response(text: str) -> dict | None:
         return None
 
 
-def char_ngrams(text: str, n: int = _NGRAM) -> set[str]:
-    clean = re.sub(r"\s+", "", text or "")
-    return {clean[i : i + n] for i in range(len(clean) - n + 1)}
-
-
 def _shared_runs(question: str, text: str, n: int = _NGRAM) -> list[str]:
     """Maximal contiguous shared spans (>= n chars, whitespace-insensitive).
 
@@ -323,21 +320,45 @@ async def draft_questions(groups: dict[str, list[list[dict]]], model: str | None
     return questions
 
 
-async def main_async(args: argparse.Namespace) -> None:
-    from tools.rag_stage_log import log_rag
+async def generate_evalset_core(
+    *,
+    collection: str | None = None,
+    total: int = 18,
+    ratio: tuple[float, float, float] = (0.6, 0.3, 0.1),
+    max_chunks_per_book: int = 60,
+    model: str = DEFAULT_MODEL,
+    progress=None,
+) -> dict:
+    """Importable T2.5 core: sample → draft → leak-check → payload dict (§11.1).
 
-    print("[1/3] loading chunks from Milvus ...")
-    chunks = load_chunks(limit_per_book=args.max_chunks_per_book)
+    ``collection`` routes the sampling query (None = config default);
+    ``progress`` is an optional callable receiving the CLI progress lines.
+    Raises ValueError for client-rejectable problems (no chunks / unknown
+    collection — the latter surfaces as SystemExit inside load_chunks and is
+    normalized here). The returned payload matches the CLI draft JSON exactly.
+    """
+    say = progress or (lambda _msg: None)
+
+    say("[1/3] loading chunks from Milvus ...")
+    try:
+        # Sync Milvus pull of up to 16384 rows → worker thread: this core runs
+        # as a background API job, and the call must not block the event loop
+        # (review P1-1).
+        chunks = await asyncio.to_thread(
+            load_chunks, limit_per_book=max_chunks_per_book, collection=collection
+        )
+    except SystemExit as exc:  # load_chunks signals unknown collection via SystemExit
+        raise ValueError(str(exc)) from None
     if not chunks:
-        raise SystemExit("no chunks found; run ingest_multimodal_pdf.py first")
+        raise ValueError("no chunks found; run ingest_multimodal_pdf.py first")
     books = sorted({c["book_id"] for c in chunks})
-    print(f"      {len(chunks)} chunks across {len(books)} books: {books}")
+    say(f"      {len(chunks)} chunks across {len(books)} books: {books}")
     if len(books) < 2:
-        print("      [warn] only one book ingested; cross_book questions will be skipped")
+        say("      [warn] only one book ingested; cross_book questions will be skipped")
 
-    print(f"[2/3] drafting questions via LLM ({args.model}) ...")
-    groups = stratified_sample(chunks, args.total, tuple(args.ratio))
-    questions = await draft_questions(groups, model=args.model)
+    say(f"[2/3] drafting questions via LLM ({model}) ...")
+    groups = stratified_sample(chunks, total, tuple(ratio))
+    questions = await draft_questions(groups, model=model)
 
     # Leak self-check needs full chunk text; re-attach from the source pools.
     by_id = {c["chunk_id"]: c for c in chunks}
@@ -349,10 +370,10 @@ async def main_async(args: argparse.Namespace) -> None:
         item["leak_chunk_ids"] = leaking
         leak_count += bool(leaking)
 
-    print("[3/3] writing draft ...")
-    payload = {
+    say("[3/3] writing draft ...")
+    return {
         "version": "t2.5-draft-1",
-        "generator": {"model": args.model, "seed": 20260918, "ratio": list(args.ratio)},
+        "generator": {"model": model, "seed": 20260918, "ratio": list(tuple(ratio))},
         "counts": {
             "total": len(questions),
             "single_hop": sum(1 for q in questions if q["type"] == "single_hop"),
@@ -362,9 +383,31 @@ async def main_async(args: argparse.Namespace) -> None:
         },
         "questions": questions,
     }
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    from tools.rag_stage_log import log_rag
+
+    try:
+        payload = await generate_evalset_core(
+            total=args.total,
+            ratio=tuple(args.ratio),
+            max_chunks_per_book=args.max_chunks_per_book,
+            model=args.model,
+            progress=print,
+        )
+    except ValueError as exc:  # CLI parity: same message, same exit code as before
+        raise SystemExit(str(exc)) from None
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    log_rag("mm_evalset_generated", total=len(questions), leak_suspect=leak_count, output=str(args.output))
+    leak_count = payload["counts"]["leak_suspect"]
+    log_rag(
+        "mm_evalset_generated",
+        total=payload["counts"]["total"],
+        leak_suspect=leak_count,
+        output=str(args.output),
+    )
     print(json.dumps(payload["counts"], ensure_ascii=False))
     print(f"draft written to {args.output} — 人工校准后删除坏题/修正答案再交付评测")
 
@@ -377,8 +420,9 @@ def main() -> None:
     )
     parser.add_argument("--max-chunks-per-book", type=int, default=60)
     parser.add_argument(
-        "--model", default="openai/glm-5.3-flash",
-        help="Drafting model (default glm-5.3-flash: same plan endpoint, much faster than glm-5.3)"
+        "--model",
+        default=DEFAULT_MODEL,
+        help="Drafting model (default glm-5.3-flash: same plan endpoint, much faster than glm-5.3)",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
