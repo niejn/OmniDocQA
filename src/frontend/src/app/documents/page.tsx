@@ -1,102 +1,48 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-/* ── types (mirror of backend document_api models) ─────────────────── */
-
-type Collection = "text" | "multimodal";
-
-interface FilterFacetChapter {
-  document_id: number;
-  chapter_index: number;
-  chapter_label: string;
-  filename: string;
-  pages: number;
-  chunks: { text: number; image: number };
-}
-interface FilterFacetBook {
-  book_id: string;
-  chapter_count: number;
-  chunk_count: number;
-  chapters: FilterFacetChapter[];
-}
-interface FiltersFacet {
-  books: FilterFacetBook[];
-  kinds: string[];
-}
-interface DocumentFilters {
-  books?: string[];
-  chapters?: number[];
-  kinds?: ("text" | "image")[];
-}
-interface DocumentSet {
-  set_id: string;
-  name: string;
-  kind: "filter" | "enumerated";
-  filter_json?: DocumentFilters | null;
-  chunk_ids?: string[] | null;
-  chunk_count?: number;
-  stale_chunk_count?: number;
-}
-interface Evidence {
-  rank: number;
-  chunk_id?: string;
-  node_id?: string;
-  kind: string;
-  score: number;
-  document_id?: number;
-  filename?: string | null;
-  title?: string | null;
-  page_no?: number | null;
-  text_preview: string;
-  book_id?: string | null;
-  chapter_label?: string | null;
-  image_url?: string;
-}
-interface AskResult {
-  trace_id: string;
-  latency_ms?: number;
-  collection: Collection;
-  question: string;
-  answer: string | null;
-  evidence: Evidence[];
-  counts?: Record<string, number>;
-}
-interface ChapterChunks {
-  document_id: number;
-  kind: string | null;
-  page: number;
-  page_size: number;
-  total: number;
-  chunks: Evidence[];
-}
+import { DocumentList } from "./DocumentList";
+import { EvalPanel } from "./EvalPanel";
+import { jsonFetch } from "./jsonFetch";
+import { UploadPanel } from "./UploadPanel";
+import type {
+  AskResult,
+  ChapterChunks,
+  Collection,
+  CollectionInfo,
+  CollectionsResponse,
+  CreateCollectionPayload,
+  DocumentFilters,
+  DocumentListItem,
+  DocumentSet,
+  Evidence,
+  FilterFacetChapter,
+  FiltersFacet,
+  UploadCollectionOption,
+  UploadResult
+} from "./types";
+import { collectionKind } from "./types";
 
 /* ── localStorage keys (selection persistence + invalidation cleanup) ─ */
 
 const LS_FILTERS = "documents.filters.v1";
 const LS_COLLECTION = "documents.collection.v1";
 
-async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, { ...init, headers: { "Content-Type": "application/json" } });
-  const text = await res.text();
-  let data: unknown = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    /* non-JSON error body */
-  }
-  if (!res.ok) {
-    const detail = (data as { detail?: { message?: string } | string })?.detail;
-    const message =
-      typeof detail === "string" ? detail : detail?.message || `请求失败 (${res.status})`;
-    throw new Error(message);
-  }
-  return data as T;
+/* collections 接口不可达时的兜底固定库，保持旧行为（multimodal/text 可见可选）。 */
+const FALLBACK_COLLECTIONS: CollectionInfo[] = [
+  { id: "multimodal", available: true, points: null, kind: "fixed" },
+  { id: "text", available: true, points: null, kind: "fixed" }
+];
+
+function collectionLabel(id: string): string {
+  if (id === "multimodal") return "多模态";
+  if (id === "text") return "财务文本（SEC）";
+  return id;
 }
 
 /* ── FilterBar: books/chapters independent checkboxes + kind + sets ─── */
@@ -318,14 +264,27 @@ function ChapterDrawer({
     setPage(1);
   }, [chapter, kind]);
 
+  // 切章时立即清空旧数据，避免慢响应期间闪现上一章内容
+  useEffect(() => {
+    setData(null);
+  }, [chapter]);
+
   useEffect(() => {
     if (!chapter) return;
+    let stale = false; // 竞态守卫：翻页/切章后旧响应不得覆盖新状态
     setError(null);
     const params = new URLSearchParams({ page: String(page), page_size: "20" });
     if (kind) params.set("kind", kind);
     jsonFetch<ChapterChunks>(`/api/documents/chapters/${chapter.document_id}/chunks?${params}`)
-      .then(setData)
-      .catch((e: Error) => setError(e.message));
+      .then((d) => {
+        if (!stale) setData(d);
+      })
+      .catch((e: Error) => {
+        if (!stale) setError(e.message);
+      });
+    return () => {
+      stale = true;
+    };
   }, [chapter, kind, page]);
 
   if (!chapter) return null;
@@ -354,6 +313,7 @@ function ChapterDrawer({
           ))}
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
+        {!data && !error && <p className="text-sm text-zinc-400">加载中…</p>}
         <div className="space-y-2">
           {(data?.chunks || []).map((chunk) => (
             <EvidenceCardView
@@ -392,8 +352,10 @@ function ChapterDrawer({
 
 export default function DocumentsPage() {
   const [facet, setFacet] = useState<FiltersFacet | null>(null);
-  const [collections, setCollections] = useState<{ id: string; available: boolean; points: number | null }[]>([]);
+  const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [collection, setCollection] = useState<Collection>("multimodal");
+  const [uploadCollection, setUploadCollection] = useState("multimodal");
+  const [creatingCollection, setCreatingCollection] = useState(false);
   const [filters, setFilters] = useState<DocumentFilters>({});
   const [sets, setSets] = useState<DocumentSet[]>([]);
   const [activeSetId, setActiveSetId] = useState<string | null>(null);
@@ -407,43 +369,101 @@ export default function DocumentsPage() {
   const [chapter, setChapter] = useState<FilterFacetChapter | null>(null);
   const [saveName, setSaveName] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  // P1-1: collection 侧独立 hydration 标志。语义：仅当 collections fetch 成功且
+  // "恢复持久化库"的决策已落地（恢复成功，或本地从未保存过）才置位；
+  // fetch 失败 / 保存值不在列表或不可用时保持 false，LS 原值得以保留
+  // （动态库恢复可用后下次进入页面仍能自动恢复）。persist effect 据此门控。
+  const [collectionHydrated, setCollectionHydrated] = useState(false);
+  // P1-1: 区分"用户手动切换"与"初始写入"——hydrate 完成前用户切库也应立即生效并持久化。
+  const collectionTouchedRef = useRef(false);
+  const [documents, setDocuments] = useState<DocumentListItem[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [deletingDocId, setDeletingDocId] = useState<number | null>(null);
+
+  const refreshFacets = useCallback(async () => {
+    const f = await jsonFetch<FiltersFacet>("/api/documents/filters");
+    setFacet(f);
+    return f;
+  }, []);
+
+  const refreshDocuments = useCallback(async () => {
+    const list = await jsonFetch<DocumentListItem[]>("/api/documents/documents");
+    setDocuments(Array.isArray(list) ? list : []);
+    return list;
+  }, []);
 
   /* init: facet + collections + persisted filters (with invalidation cleanup) */
   useEffect(() => {
-    jsonFetch<FiltersFacet>("/api/documents/filters").then((f) => {
-      setFacet(f);
-      const knownBooks = new Set((f.books || []).map((b) => b.book_id));
-      const knownChapters = new Set((f.books || []).flatMap((b) => b.chapters.map((c) => c.document_id)));
-      try {
-        const raw = window.localStorage.getItem(LS_FILTERS);
-        if (raw) {
-          const saved = JSON.parse(raw) as DocumentFilters;
-          // 失效清洗：库已删的书/章从持久化勾选中剔除
-          setFilters({
-            books: (saved.books || []).filter((b) => knownBooks.has(b)),
-            chapters: (saved.chapters || []).filter((c) => knownChapters.has(c)),
-            kinds: saved.kinds || []
-          });
+    // hydrated 仅在 facet 成功恢复后置位：失败路径不触发 persist，用户 localStorage 勾选保持原值
+    refreshFacets()
+      .then((f) => {
+        try {
+          const raw = window.localStorage.getItem(LS_FILTERS);
+          if (raw) {
+            const saved = JSON.parse(raw) as DocumentFilters;
+            // P2-6: facet.books 为空数组时跳过失效清洗，直接按保存内容恢复。
+            // 原因：删光全部文档是可达状态，此时 facets 返回空 books 并不代表勾选失效；
+            // 若照常清洗会把持久化勾选全部剔除，并随 persist effect 写回空值（误清 LS）。
+            // 保持 LS 原值（重写为相同内容），待 facet 恢复非空后下次进入页面再清洗。
+            if ((f.books || []).length > 0) {
+              const knownBooks = new Set(f.books.map((b) => b.book_id));
+              const knownChapters = new Set(f.books.flatMap((b) => b.chapters.map((c) => c.document_id)));
+              // 失效清洗：库已删的书/章从持久化勾选中剔除
+              setFilters({
+                books: (saved.books || []).filter((b) => knownBooks.has(b)),
+                chapters: (saved.chapters || []).filter((c) => knownChapters.has(c)),
+                kinds: saved.kinds || []
+              });
+            } else {
+              setFilters({ books: saved.books || [], chapters: saved.chapters || [], kinds: saved.kinds || [] });
+            }
+          }
+        } catch {
+          /* corrupted storage: start clean */
         }
-      } catch {
-        /* corrupted storage: start clean */
-      }
-    }).catch((e: Error) => setError(e.message));
-    fetch("/api/documents/collections")
-      .then((r) => r.json())
-      .then((d) => setCollections(d.collections || []))
-      .catch(() => undefined);
-    jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets").then((d) => setSets(d.sets)).catch(() => undefined);
+        setHydrated(true);
+      })
+      .catch((e: Error) => setError(e.message));
+    refreshDocuments().catch(() => undefined); // 文档列表失败静默降级，不阻塞主功能
     const savedCollection = window.localStorage.getItem(LS_COLLECTION);
-    if (savedCollection === "text" || savedCollection === "multimodal") setCollection(savedCollection);
-  }, []);
+    // P2-7: 裸 fetch → jsonFetch：非 2xx 也会走 catch 降级 FALLBACK，不再静默吞错。
+    jsonFetch<CollectionsResponse>("/api/documents/collections")
+      .then((d) => {
+        const list = Array.isArray(d.collections) ? d.collections : [];
+        setCollections(list);
+        if (!collectionTouchedRef.current && savedCollection && list.some((c) => c.id === savedCollection && c.available)) {
+          // 恢复成功：恢复值与 LS 一致，开放后续 persist 无覆盖风险
+          setCollection(savedCollection);
+          setCollectionHydrated(true);
+        } else if (!savedCollection) {
+          // 本地从未保存过：开放 persist（写入当前值无覆盖风险）
+          setCollectionHydrated(true);
+        }
+        // 其余情况（保存值不在列表/不可用，或用户已抢先手动切换）：保持门控不置位，
+        // LS 原值保留——动态库恢复 available 后下次进入页面仍能自动恢复；
+        // 用户此后的手动切换经 collectionTouchedRef 直写持久化，不受门控影响。
+      })
+      .catch((e: Error) => {
+        // 降级行为保留：collections 置空 → collectionList 回退 FALLBACK_COLLECTIONS。
+        // 取舍：初始化的非阻塞路径，走红色 error 通道太吵，改用 console.warn + 顶部 notice 弱提示。
+        console.warn("[documents] collections 接口不可达，已回退到固定库列表", e);
+        setNotice("集合列表获取失败，已回退到固定库（multimodal / text）。");
+        // 失败不置位 collectionHydrated：LS 中保存的库选择保留到下次成功 fetch
+      });
+    jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets").then((d) => setSets(d.sets)).catch(() => undefined);
+  }, [refreshFacets, refreshDocuments]);
 
   useEffect(() => {
+    if (!hydrated) return; // 水合前不写入，防止初始空 filters 覆盖用户持久化勾选
     window.localStorage.setItem(LS_FILTERS, JSON.stringify(filters));
-  }, [filters]);
+  }, [filters, hydrated]);
   useEffect(() => {
+    // P1-1: collection hydrate（fetch + 恢复决策）落地前不写 LS，防止初始 "multimodal"
+    // 抢先覆盖保存的库选择；但用户手动切换（touched ref）不受门控，随时生效并持久化。
+    if (!collectionHydrated && !collectionTouchedRef.current) return;
     window.localStorage.setItem(LS_COLLECTION, collection);
-  }, [collection]);
+  }, [collection, collectionHydrated]);
 
   const ask = useCallback(async () => {
     if (!question.trim() || busy) return;
@@ -457,7 +477,9 @@ export default function DocumentsPage() {
         top_k: topK,
         generate_answer: generateAnswer
       };
-      if (collection === "multimodal") {
+      // P2-5: filters/set 是多模态域能力，后端对动态多模态库同样支持——凡非 text 库一律下推；
+      // text（SEC filings 纯文本域）维持原有提示逻辑，不携带筛选参数。
+      if (collection !== "text") {
         if (activeSetId) body.set_id = activeSetId;
         else if (filters.books?.length || filters.chapters?.length || filters.kinds?.length)
           body.filters = filters;
@@ -504,7 +526,110 @@ export default function DocumentsPage() {
     }
   }, [saveName, selectedIds]);
 
-  const mmAvailable = collections.find((c) => c.id === "multimodal")?.available;
+  /* 创建动态集合：成功后刷新列表并自动选为新上传目标；失败 detail 已可见 */
+  const createCollection = useCallback(
+    async (name: string, description: string): Promise<boolean> => {
+      setCreatingCollection(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const body: CreateCollectionPayload = { name };
+        if (description) body.description = description;
+        await jsonFetch("/api/documents/collections", {
+          method: "POST",
+          body: JSON.stringify(body)
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return false;
+      } finally {
+        setCreatingCollection(false);
+      }
+      setUploadCollection(name); // 自动选中新集合（即使随后列表刷新失败也不影响选中）
+      setNotice(`已创建集合「${name}」，已选为上传目标`);
+      try {
+        const d = await jsonFetch<CollectionsResponse>("/api/documents/collections");
+        setCollections(Array.isArray(d.collections) ? d.collections : []);
+      } catch {
+        /* 刷新列表失败静默：创建本身已成功，下次进入页面会拿到新列表 */
+      }
+      return true;
+    },
+    []
+  );
+
+  const handleUpload = useCallback(
+    async (file: File) => {
+      if (uploading) return;
+      setUploading(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("collection", uploadCollection); // 契约要求显式携带目标集合（默认 multimodal）
+        const result = await jsonFetch<UploadResult>("/api/documents/upload", {
+          method: "POST",
+          body: form
+        });
+        const statusNote =
+          result.status === "completed" ? "已入库，可直接检索" : `状态 ${result.status}（未完成入库）`;
+        setNotice(
+          `${result.filename} → document_id ${result.document_id}，${result.page_count} 页 ${result.node_count} 块，${statusNote}`
+        );
+        await Promise.all([refreshFacets(), refreshDocuments()]);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [uploading, uploadCollection, refreshFacets, refreshDocuments]
+  );
+
+  const handleDeleteDocument = useCallback(
+    async (doc: DocumentListItem) => {
+      if (deletingDocId !== null) return;
+      const label = doc.title || doc.filename;
+      if (!confirm(`确认删除文档「${label}」（id ${doc.document_id}）？该操作不可撤销。`)) return;
+      setDeletingDocId(doc.document_id);
+      setError(null);
+      setNotice(null);
+      try {
+        await jsonFetch(`/api/documents/documents/${doc.document_id}`, { method: "DELETE" });
+        setDocuments((prev) => prev.filter((d) => d.document_id !== doc.document_id));
+        setNotice(`已删除文档「${label}」（id ${doc.document_id}）`);
+        await refreshFacets();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDeletingDocId(null);
+      }
+    },
+    [deletingDocId, refreshFacets]
+  );
+
+  /* 完整库列表（fixed + dynamic）；接口失败时回退到两个固定库 */
+  const collectionList = collections.length > 0 ? collections : FALLBACK_COLLECTIONS;
+  /* 上传可写集合：multimodal 固定库 + kind=dynamic 且 available 的库（排除 text 等 fixed 库）。
+     P2-8: multimodal available=false 时仍保留入选，但携带 available 标记供下拉文案标注。 */
+  const writableCollections = useMemo<UploadCollectionOption[]>(() => {
+    const opts: UploadCollectionOption[] = [];
+    const mm = collectionList.find((c) => c.id === "multimodal");
+    if (mm) opts.push({ id: mm.id, points: mm.points, available: mm.available });
+    for (const c of collectionList) {
+      if (collectionKind(c) !== "dynamic" || !c.available || c.id === "multimodal") continue;
+      opts.push({ id: c.id, points: c.points, available: c.available });
+    }
+    return opts;
+  }, [collectionList]);
+  /* P2-9: 上传下拉展示列表——当前 uploadCollection 不在可写列表时（新建集合后列表刷新
+     失败、库被他端删除等），追加一个临时占位选项（标注「探测中/不可用」），
+     避免 select 空显与"看起来已选中实际未带上"的静默 422。 */
+  const uploadOptions = useMemo<UploadCollectionOption[]>(() => {
+    if (writableCollections.some((o) => o.id === uploadCollection)) return writableCollections;
+    return [...writableCollections, { id: uploadCollection, points: null, available: false, pending: true }];
+  }, [writableCollections, uploadCollection]);
   const evidence = result?.evidence || [];
 
   return (
@@ -538,22 +663,24 @@ export default function DocumentsPage() {
           <Card>
             <CardContent className="space-y-3 pt-5">
               <div className="flex items-center gap-3 text-sm">
-                <span className="text-zinc-500">检索库</span>
-                {(["multimodal", "text"] as const).map((c) => {
-                  const info = collections.find((x) => x.id === c);
-                  const disabled = c === "multimodal" && !mmAvailable;
-                  return (
-                    <label key={c} className={cn("flex items-center gap-1", disabled && "opacity-40")}>
-                      <input
-                        type="radio"
-                        checked={collection === c}
-                        disabled={disabled}
-                        onChange={() => setCollection(c)}
-                      />
-                      {c === "multimodal" ? `多模态（${info?.points ?? 0} 块）` : "财务文本（SEC）"}
-                    </label>
-                  );
-                })}
+                <span className="shrink-0 text-zinc-500">检索库</span>
+                <select
+                  className="min-w-0 flex-1 rounded border border-zinc-300 px-2 py-1 text-sm"
+                  value={collection}
+                  onChange={(e) => {
+                    // P1-1: 标记用户操作——hydrate 完成前手动切库也立即生效并持久化
+                    collectionTouchedRef.current = true;
+                    setCollection(e.target.value);
+                  }}
+                >
+                  {collectionList.map((c) => (
+                    <option key={c.id} value={c.id} disabled={!c.available}>
+                      {collectionLabel(c.id)}（{c.points ?? 0} 块）
+                      {c.available ? "" : " · 不可用"}
+                      {collectionKind(c) === "dynamic" ? " · 动态" : ""}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="flex gap-2">
                 <input
@@ -624,8 +751,27 @@ export default function DocumentsPage() {
           )}
         </section>
 
-        {/* right rail: filters */}
+        {/* right rail: upload + filters + inventory */}
         <aside className="space-y-4">
+          <UploadPanel
+            uploading={uploading}
+            onUpload={(file) => void handleUpload(file)}
+            onError={setError}
+            collectionOptions={uploadOptions}
+            collection={uploadCollection}
+            onCollectionChange={(id) => {
+              setUploadCollection(id);
+              // P2-8: 选中不可用集合（multimodal available=false 时仍保留入选）给弱提示：
+              // 该库 Qdrant collection 缺失，上传大概率 502。走 notice 弱提示而非 error 红条。
+              const opt = writableCollections.find((o) => o.id === id);
+              if (opt && !opt.available) {
+                setNotice(`集合「${id}」当前不可用，上传可能失败（502）；请确认该库索引是否就绪。`);
+              }
+            }}
+            onCreateCollection={createCollection}
+            creatingCollection={creatingCollection}
+          />
+          <EvalPanel collections={collectionList} />
           <FilterBar
             facet={facet}
             filters={filters}
@@ -638,14 +784,24 @@ export default function DocumentsPage() {
             }}
             onSetDelete={async (id) => {
               if (!confirm("确认删除该集合？")) return;
-              await fetch(`/api/documents/sets/${id}`, { method: "DELETE" });
+              try {
+                await jsonFetch(`/api/documents/sets/${id}`, { method: "DELETE" });
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+                return; // 删除失败：保留 activeSetId 与列表原状，错误已可见
+              }
               setActiveSetId(null);
-              const d = await jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets");
-              setSets(d.sets);
+              try {
+                const d = await jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets");
+                setSets(d.sets);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              }
             }}
             onSaveSelection={saveSelectionAsSet}
             onOpenChapter={(ch) => setChapter(ch)}
           />
+          <DocumentList documents={documents} deletingId={deletingDocId} onDelete={(doc) => void handleDeleteDocument(doc)} />
           {collection === "text" && (
             <p className="text-xs text-zinc-400">text 库为 SEC filings，筛选器/集合不生效（多模态域专用）。</p>
           )}

@@ -12,7 +12,10 @@ export async function GET(req: NextRequest) {
     );
     if (!upstream.ok) {
       const text = await upstream.text();
-      return new NextResponse(text || upstream.statusText, { status: upstream.status });
+      return new NextResponse(text || upstream.statusText, {
+        status: upstream.status,
+        headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json; charset=utf-8" }
+      });
     }
     const buffer = await upstream.arrayBuffer();
     return new NextResponse(buffer, {
