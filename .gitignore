@@ -398,3 +398,6 @@ src/agent/tools/data/multimodal_eval/
 # Local-only artifacts (minio image extraction scratch, git bundle backup)
 .tmp_minio_image/
 *.bundle
+
+# MinIO source build workspace (build_minio_from_source.sh)
+.minio_src/
