@@ -45,30 +45,40 @@ class EmbedResult:
 
 class FixedWindowRateLimiter:
     """Fixed-window RPM limiter (reference parity, async-sleep so the event loop
-    is never blocked while waiting for the window to roll over)."""
+    is never blocked while waiting for the window to roll over).
+
+    ``acquire`` holds one ``asyncio.Lock`` for its whole critical section —
+    including the wait-sleep. Without it, k concurrent coroutines all observe
+    ``count >= limit``, all sleep, and all reset the window, so a window
+    admits far more than ``limit`` requests and the counter only reflects the
+    last resetter. Serial waiting inside the lock is the correct fixed-window
+    semantics: each window admits exactly ``limit`` requests.
+    """
 
     def __init__(self, limit: int, window_seconds: int = 60, *, clock=time.monotonic, sleeper=None) -> None:
         self.limit = max(1, int(limit))
         self.window_seconds = int(window_seconds)
         self._clock = clock
         self._sleeper = sleeper or asyncio.sleep
+        self._lock = asyncio.Lock()
         self.window_start = clock()
         self.count = 0
 
     async def acquire(self) -> None:
-        now = self._clock()
-        elapsed = now - self.window_start
-        if elapsed >= self.window_seconds:
-            self.window_start = now
-            self.count = 0
-        if self.count >= self.limit:
-            sleep_sec = self.window_seconds - elapsed
-            if sleep_sec > 0:
-                logger.debug("[MmVector] rate limit hit, sleeping {:.2f}s", sleep_sec)
-                await self._sleeper(sleep_sec)
-            self.window_start = self._clock()
-            self.count = 0
-        self.count += 1
+        async with self._lock:
+            now = self._clock()
+            elapsed = now - self.window_start
+            if elapsed >= self.window_seconds:
+                self.window_start = now
+                self.count = 0
+            if self.count >= self.limit:
+                sleep_sec = self.window_seconds - elapsed
+                if sleep_sec > 0:
+                    logger.debug("[MmVector] rate limit hit, sleeping {:.2f}s", sleep_sec)
+                    await self._sleeper(sleep_sec)
+                self.window_start = self._clock()
+                self.count = 0
+            self.count += 1
 
 
 @lru_cache(maxsize=1)

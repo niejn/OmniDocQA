@@ -3,22 +3,43 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import replace
-from typing import Any, AsyncGenerator, Optional, Sequence
-
-from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Any
 
 from core.config import config
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from .langfuse_tracing import TraceContext, tracer
 from .llamaindex_retrieval import retrieval_service
 from .llm import get_llm
 from .node_repository import enqueue_evaluation_job, ensure_schema
 from .rag_stage_log import log_rag, rag_request_scope
 from .report_store import save_langfuse_observability_report
+
+
+class MultimodalModeAskError(ValueError):
+    """Raised when /ask runs under ``DENSE_BACKEND=milvus_multimodal``.
+
+    The /ask pipeline depends on rag_nodes PG rows / section tree / sibling
+    expansion, none of which exist on the multimodal path. ``ask_api`` maps
+    this to HTTP 409 (mode conflict) instead of the generic 500.
+    """
+
+
+def ensure_ask_mode_allowed() -> None:
+    """Multimodal-mode guard (design §4.3); raises :class:`MultimodalModeAskError`.
+
+    Kept sync so the streaming endpoint can fail BEFORE StreamingResponse
+    emits its headers (once streaming started the status can no longer be 409).
+    """
+    if (config.dense_backend or "").strip().lower() == "milvus_multimodal":
+        raise MultimodalModeAskError(
+            "DENSE_BACKEND=milvus_multimodal 仅服务 /agent/api/documents; /ask 请切回 DENSE_BACKEND=milvus"
+        )
 
 
 def _norm_accn(value: Any) -> str | None:
@@ -341,17 +362,17 @@ async def _execute_finance_sql_plan(
     accns: list[str] | None = None,
     preferred_accns: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    from tools.finance.financial_facts_repository import (
-        query_observations_by_filters,
-        query_observations_by_metric_hints,
-        query_observations_for_documents,
-    )
     from tools.finance.finance_query_plan import (
         FINANCE_SQL_EXACT_LIMIT,
         FINANCE_SQL_EXACT_MIN_ROWS,
         FINANCE_SQL_HINT_QUERY_LIMIT,
         FINANCE_SQL_MERGED_CAP,
         FINANCE_SQL_RECENT_LIMIT,
+    )
+    from tools.finance.financial_facts_repository import (
+        query_observations_by_filters,
+        query_observations_by_metric_hints,
+        query_observations_for_documents,
     )
 
     sql_plan = evidence_plan.sql_plan
@@ -754,12 +775,17 @@ async def _finance_sql_bundle(
     document_ids: list[int],
 ) -> tuple[Any, str, list[dict[str, Any]], dict[str, Any], Any | None]:
     """Rule-first (+ optional LLM) routing; fetch SEC observations when need_sql."""
-    from tools.finance.financial_facts_repository import document_ids_with_sec_observations
     from tools.finance.finance_filing_resolver import attach_filing_hypotheses
-    from tools.finance.finance_query_plan import build_finance_evidence_plan
     from tools.finance.finance_intent import resolve_finance_intent
+    from tools.finance.finance_query_plan import build_finance_evidence_plan
     from tools.finance.finance_query_plan_llm import build_finance_evidence_plan_llm
-    from tools.finance.question_router import FinanceRoute, format_sql_observations_for_prompt
+    from tools.finance.financial_facts_repository import (
+        document_ids_with_sec_observations,
+    )
+    from tools.finance.question_router import (
+        FinanceRoute,
+        format_sql_observations_for_prompt,
+    )
 
     if not config.finance_sql_routing_enabled:
         plan_source = "heuristic"
@@ -1739,10 +1765,8 @@ async def answer_question(
 ) -> dict[str, Any]:
     # Multimodal-mode guard (design §4.3): the /ask pipeline depends on rag_nodes
     # PG rows / section tree / sibling expansion, absent on the multimodal path.
-    if (config.dense_backend or "").strip().lower() == "milvus_multimodal":
-        raise ValueError(
-            "DENSE_BACKEND=milvus_multimodal 仅服务 /agent/api/documents; /ask 请切回 DENSE_BACKEND=milvus"
-        )
+    # Raises MultimodalModeAskError (mapped to HTTP 409 by ask_api).
+    ensure_ask_mode_allowed()
     await ensure_schema()
     request_started_at = time.perf_counter()
     trace_ctx = tracer.start_request(
@@ -1805,11 +1829,11 @@ async def answer_question(
 #   1. 混合检索(稠密 + 稀疏 + 重排)  ← 单次 retrieve 调用内部完成
 #      → retrieval_service.retrieve(query, ...)  (本函数内调用)
 #        · 内部顺序(见 llamaindex_retrieval 的 retrieve): query 向量化(OpenRouter)
-#          → 稠密检索(Qdrant) → 稀疏检索(Postgres/OpenSearch 全文) → RRF 融合 → 本地 CrossEncoder 重排。
+#          → 稠密检索(Milvus) → 稀疏检索(Milvus/Postgres 全文) → RRF 融合 → 本地 CrossEncoder 重排。
 #   2. (可选) SQL 收窄 RAG 候选 → prioritize_nodes_by_sql_evidence(...)  (本函数内, 仅开关开启时)
 #   3. 上下文装配(兄弟节点扩展 / 字符预算截断)
 #   4. LLM 生成答案 → get_llm(model_name=config.default_model)  (本函数末尾, 调火山方舟 deepseek-v4-pro)
-# 注: "稀疏检索"= 关键词/全文检索(Postgres/OpenSearch), 与 SQL 财务事实查询是两条独立路径。
+# 注: "稀疏检索"= 关键词/全文检索(Milvus/Postgres), 与 SQL 财务事实查询是两条独立路径。
 # ════════════════════════════════════════════════════════════════════════════
 async def _answer_question_body(
     *,
@@ -1907,7 +1931,7 @@ async def _answer_question_body(
                     "retrieval_soft_hints": retrieval_soft_hints,
                 },
             ) as retrieval_span:
-                # 阶段1: 混合检索 = 稠密(Qdrant) + 稀疏(Postgres/OpenSearch) + 本地 CrossEncoder 重排, 全部在 retrieve 内完成
+                # 阶段1: 混合检索 = 稠密(Milvus) + 稀疏(Milvus/Postgres) + 本地 CrossEncoder 重排, 全部在 retrieve 内完成
                 retrieval = await retrieval_service.retrieve(
                     query=retrieve_query,
                     document_ids=document_ids,
@@ -2025,7 +2049,9 @@ async def _answer_question_body(
                 )
                 second_sql_meta: dict[str, Any] | None = None
                 if route.need_sql and controller_meta.get("target_accns"):
-                    from tools.finance.question_router import format_sql_observations_for_prompt
+                    from tools.finance.question_router import (
+                        format_sql_observations_for_prompt,
+                    )
 
                     second_sql_rows, second_sql_meta = await _execute_finance_sql_plan(
                         document_ids=document_ids,
@@ -2077,7 +2103,9 @@ async def _answer_question_body(
             and sql_rows
             and retrieval.get("nodes")
         ):
-            from tools.finance.sql_evidence_narrowing import prioritize_nodes_by_sql_evidence
+            from tools.finance.sql_evidence_narrowing import (
+                prioritize_nodes_by_sql_evidence,
+            )
 
             # 阶段2(可选): 用 SQL 财务事实行收窄/重排 RAG 候选 (FINANCE_SQL_NARROW_RAG_ENABLED 时)
             retrieval["nodes"], narrow_stats = prioritize_nodes_by_sql_evidence(
@@ -2314,7 +2342,9 @@ async def _answer_question_body(
             and nodes
             and (answer or "").strip()
         ):
-            from tools.answer_evidence_quotes import extract_answer_aligned_verified_quotes
+            from tools.answer_evidence_quotes import (
+                extract_answer_aligned_verified_quotes,
+            )
 
             try:
                 with tracer.span(

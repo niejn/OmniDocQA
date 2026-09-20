@@ -179,12 +179,17 @@ class MilvusMultimodalDenseBackend:
         book_id: str,
         chapter_label: str,
     ) -> dict[str, Any]:
-        """Delete-then-insert with in-backend vectorization (idempotent re-run)."""
+        """Vectorize-validate-then-replace (idempotent re-run).
+
+        All chunks are embedded and dimension-checked BEFORE the old
+        document's points are deleted: a failed embed or dim mismatch must
+        leave the previous points intact instead of wiping them (the old
+        delete-first order emptied the document whenever vectorization
+        failed mid-way).
+        """
         if not chunks:
             return {"inserted": 0, "truncated": 0}
-        self.replace_document_nodes(int(document_id))
-        # Vectorize first (fail-fast before any insert: half-written state is
-        # acceptable but pointless — a failed embed should not leave points).
+        # 1. Vectorize everything first — fail-fast before ANY destructive write.
         rows: list[dict[str, Any]] = []
         truncated_count = 0
         for chunk in chunks:
@@ -214,11 +219,15 @@ class MilvusMultimodalDenseBackend:
                     "dense": result.vector,
                 }
             )
+        # 2. Dimension consistency + collection dim check, still write-free.
         first_dim = len(rows[0]["dense"])
         mismatched = [r["id"] for r in rows if len(r["dense"]) != first_dim]
         if mismatched:
             raise ValueError(f"inconsistent embedding dims in batch: {len(mismatched)} rows off {first_dim}")
         self.ensure_collection(first_dim)
+        # 3. Replace: delete the old points only now that the new rows are
+        #    fully validated, then insert.
+        self.replace_document_nodes(int(document_id))
         client = get_client()
         for start in range(0, len(rows), _INSERT_BATCH):
             client.insert(collection_name=self.collection, data=rows[start : start + _INSERT_BATCH])

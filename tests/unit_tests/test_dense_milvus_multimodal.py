@@ -133,7 +133,7 @@ def test_build_filter_expr_empty():
     assert build_filter_expr() == ""
 
 
-def test_upsert_embeds_inside_backend_and_deletes_first(fake_client: FakeClient):
+def test_upsert_embeds_inside_backend_then_replaces(fake_client: FakeClient):
     backend = MilvusMultimodalDenseBackend()
     vectorizer = FakeVectorizer()
     stats = asyncio.run(
@@ -147,7 +147,7 @@ def test_upsert_embeds_inside_backend_and_deletes_first(fake_client: FakeClient)
         )
     )
     assert stats["inserted"] == 2 and stats["truncated"] == 0
-    assert fake_client.deleted_filters == ["document_id == 901"]  # idempotent pre-delete
+    assert fake_client.deleted_filters == ["document_id == 901"]  # idempotent replace
     assert len(fake_client.inserted) == 2
     text_row = fake_client.inserted[0]
     image_row = fake_client.inserted[1]
@@ -171,6 +171,7 @@ def test_upsert_embedding_failure_is_fail_fast(fake_client: FakeClient):
             )
         )
     assert fake_client.inserted == []  # nothing written on failure
+    assert fake_client.deleted_filters == []  # previous points survive (delete runs after validation)
 
 
 def test_upsert_image_without_data_uri_raises(fake_client: FakeClient):

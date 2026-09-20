@@ -4,11 +4,24 @@ import asyncio
 import json
 
 import httpx
+import pytest
 from tools.multimodal_vectorizer import (
     EmbedResult,
     FixedWindowRateLimiter,
     MultimodalVectorizer,
 )
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_ark_endpoint(monkeypatch: pytest.MonkeyPatch):
+    """Pin the ark endpoint/key so the suite passes without a local .env.
+
+    ``_call_ark`` resolves the base URL from config (MULTIMODAL_EMBEDDING_BASE_URL
+    or OPENAI_BASE_URL) and raises when both are empty — patch the resolvers so
+    no environment file is required.
+    """
+    monkeypatch.setattr("tools.multimodal_vectorizer._effective_base_url", lambda: "http://ark.test")
+    monkeypatch.setattr("tools.multimodal_vectorizer._effective_api_key", lambda: "test-key")
 
 
 def _ark_response(vector: list[float], single_object: bool = True) -> dict:
@@ -142,6 +155,51 @@ def test_rpm_window_blocks(monkeypatch):
     sleeps = asyncio.run(run())
     assert len(sleeps) >= 1  # the 4th+ acquire had to wait for the window
     assert sleeps[0] > 0
+
+
+def test_rpm_window_concurrent_admits_exactly_limit():
+    """10 coroutines racing a fresh 3-RPM window (P1-3 regression).
+
+    Without the internal lock every waiter slept AND reset the window, so a
+    window admitted more than ``limit`` requests. With the lock held across
+    the whole critical section (wait included), each window admits exactly
+    ``limit`` requests and each rollover resets the window exactly once.
+    """
+    clocks = {"now": 0.0}
+    sleeps: list[float] = []
+
+    def clock() -> float:
+        return clocks["now"]
+
+    async def sleeper(seconds: float) -> None:
+        sleeps.append(seconds)
+        clocks["now"] += seconds
+        await asyncio.sleep(0)  # real suspension point inside the critical section
+
+    async def run():
+        limiter = FixedWindowRateLimiter(3, 60, clock=clock, sleeper=sleeper)
+        admitted: list[tuple[float, int]] = []
+
+        async def acquire_one() -> None:
+            await limiter.acquire()
+            admitted.append((limiter.window_start, limiter.count))
+
+        await asyncio.gather(*(acquire_one() for _ in range(10)))
+        return limiter, admitted
+
+    limiter, admitted = asyncio.run(run())
+    assert len(admitted) == 10  # every coroutine completes (lock wait, no deadlock)
+    windows: dict[float, int] = {}
+    for window_start, _count in admitted:
+        windows[window_start] = windows.get(window_start, 0) + 1
+    # Exactly `limit` admissions in every complete window…
+    complete = sorted(count for count in windows.values() if count == limiter.limit)
+    assert complete == [limiter.limit, limiter.limit, limiter.limit]
+    # …and never more than `limit` in any window (the old race over-admitted).
+    assert all(count <= limiter.limit for count in windows.values())
+    # Each window rollover slept (and thus reset) exactly once.
+    assert sleeps == [60.0, 60.0, 60.0]
+    assert limiter.count <= limiter.limit
 
 
 def test_image_embedding_requires_data_uri():

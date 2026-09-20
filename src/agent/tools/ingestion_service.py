@@ -322,6 +322,22 @@ def _build_nodes(document_id: int, ingest_run_id: str, text: str, metadata: dict
     return _build_section_tree_nodes(chunks, document_id=document_id, ingest_run_id=ingest_run_id, metadata=metadata)
 
 
+def _ensure_text_dense_backend() -> None:
+    """Fail fast when the TEXT pipeline runs under the multimodal dense backend.
+
+    DENSE_BACKEND=milvus_multimodal serves only /agent/api/documents (multimodal
+    PDF courseware): its backend replace is a pure delete on ``rag_multimodal``
+    and writes no ``rag_nodes`` vectors, so a text ingest/reindex here would
+    persist Postgres rows while silently losing every vector. Text storage
+    requires DENSE_BACKEND=milvus.
+    """
+    if (config.dense_backend or "").strip().lower() == "milvus_multimodal":
+        raise RuntimeError(
+            "DENSE_BACKEND=milvus_multimodal 仅服务 /agent/api/documents（多模态 PDF 入库），"
+            "文本 ingest / reindex-vectors 禁止在该模式下执行；文本入库请切 DENSE_BACKEND=milvus"
+        )
+
+
 async def _write_dense_sparse_for_document(
     document_id: int,
     *,
@@ -329,7 +345,7 @@ async def _write_dense_sparse_for_document(
     index_records: list[dict[str, Any]],
     vector_payloads: list[dict[str, Any]],
 ) -> str | None:
-    """Upsert Qdrant + OpenSearch. Avoid clearing Qdrant when we have DB nodes but zero embeddings."""
+    """Upsert Milvus dense + sparse backend. Avoid clearing dense vectors when we have DB nodes but zero embeddings."""
     dense_backend = get_dense_backend()
     sparse_backend = get_sparse_backend()
     if vector_payloads:
@@ -337,7 +353,7 @@ async def _write_dense_sparse_for_document(
     elif node_count > 0:
         logger.error(
             "[Ingestion] document_id={}: {} nodes in Postgres but 0 embeddings — "
-            "skipping Qdrant replace (prevents emptying vectors). Fix EMBEDDING_PROVIDER/API, "
+            "skipping dense-backend replace (prevents emptying vectors). Fix EMBEDDING_PROVIDER/API, "
             "then run: python scripts/run_sec_finance_pipeline.py reindex-vectors --document-id {}",
             document_id,
             node_count,
@@ -382,7 +398,7 @@ async def _store_nodes(
     ingest_run_id: str,
     nodes: list[NodeRecord],
 ) -> tuple[int, str | None]:
-    """Persist nodes to Postgres + Qdrant + OpenSearch.
+    """Persist nodes to Postgres + dense/sparse backends (Milvus dense).
 
     PostgreSQL receives the canonical full node records first.  Each node's
     ``text`` is embedded independently; IDs, ``parent_id``, ``level``, and
@@ -598,6 +614,7 @@ async def _ingest_sec_company_facts_json(
 
 
 async def process_document(file_path: str, file_type: str, document_id: int) -> dict[str, Any]:
+    _ensure_text_dense_backend()
     await ensure_schema()
     title = os.path.basename(file_path)
     path = Path(file_path)
@@ -685,6 +702,7 @@ async def process_edgar_filing_document(
     primary_document: str | None = None,
 ) -> dict[str, Any]:
     """Ingest one SEC primary filing HTML; align with companyfacts chunks via finance_accns / finance_forms."""
+    _ensure_text_dense_backend()
     await ensure_schema()
     path = Path(file_path)
     title = f"EDGAR {form or '?'} | {accession}"
@@ -854,6 +872,7 @@ async def process_edgar_filing_document(
 
 
 async def reindex_document_vectors(document_id: int) -> dict[str, Any]:
+    _ensure_text_dense_backend()
     await ensure_schema()
     nodes = await list_document_nodes(document_id)
     if not nodes:

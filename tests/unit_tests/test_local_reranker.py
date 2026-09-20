@@ -147,3 +147,20 @@ def test_factory_local_default(monkeypatch):
     described = reranker.describe_config()
     assert described["backend"] == "local"
     get_reranker.cache_clear()
+
+
+def test_factory_unknown_backend_warns_and_falls_back_to_local(monkeypatch):
+    """Legacy values like "bocha" map to local — but must warn, not stay silent."""
+    from loguru import logger
+
+    get_reranker.cache_clear()
+    monkeypatch.setattr(config, "reranker_backend", "bocha")
+    messages: list[str] = []
+    handler_id = logger.add(messages.append, level="WARNING")
+    try:
+        reranker = get_reranker()
+    finally:
+        logger.remove(handler_id)
+    assert isinstance(reranker, LocalReranker)
+    assert any("bocha" in message for message in messages)
+    get_reranker.cache_clear()

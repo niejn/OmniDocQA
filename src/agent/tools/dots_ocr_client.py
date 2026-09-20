@@ -17,9 +17,11 @@ docs/MULTIMODAL_RAG_PART2_DESIGN.md §1) without importing the package:
   continues.
 
 Insertion crops: dots.ocr only emits bboxes for Picture cells, so the actual
-jpg bytes are cropped here from the dpi=200 page render. Coordinates are
-remapped from the model's ``input_height/input_width`` (post smart-resize) to
-the page-image pixel size — the mapping factor is logged on the first page of
+jpg bytes are cropped here from the dpi=200 page render. Before sending, the
+page image is pre-scaled to the qwen-vl ``smart_resize`` fit (28-multiple
+axes, min/max pixel budget) and that input space is recorded on the page, so
+``crop_pictures`` remaps model bboxes back to the rendered pixels with real
+(non-1.0) scale factors — the mapping factor is logged on the first page of
 the first document (§14.1-1 bbox first-verification).
 """
 
@@ -28,6 +30,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -53,6 +56,13 @@ LAYOUT_CATEGORIES = (
     "Text",
     "Title",
 )
+
+# Qwen-VL vision input fitting (qwen-vl-utils smart_resize parity): images are
+# rounded to multiples of 28 under a min/max pixel budget, so vLLM receives a
+# pre-fitted image and bbox coordinates live in a known, recorded input space.
+_IMAGE_FACTOR = 28
+_MIN_PIXELS = 4 * 28 * 28  # 3136 — qwen-vl-utils default
+_MAX_PIXELS = 16384 * 28 * 28  # 12,845,056 — qwen-vl-utils default
 
 _PROMPT_LAYOUT_ALL_EN = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
 
@@ -126,6 +136,46 @@ def _jpg_bytes(img) -> bytes:
     return buf.getvalue()
 
 
+def smart_resize(
+    width: int,
+    height: int,
+    *,
+    factor: int = _IMAGE_FACTOR,
+    min_pixels: int = _MIN_PIXELS,
+    max_pixels: int = _MAX_PIXELS,
+) -> tuple[int, int]:
+    """Qwen-VL ``smart_resize`` (qwen-vl-utils parity): round both axes to
+    multiples of ``factor`` (28) and clamp the total pixel budget between
+    ``min_pixels`` and ``max_pixels``. Returns ``(resized_width, resized_height)``.
+
+    Pure geometry (no image IO) so every branch is unit-testable. Zero/negative
+    input and degenerate sub-factor sizes are floored at one factor step.
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError(f"non-positive image size: {width}x{height}")
+
+    def _round_factor(value: int) -> int:
+        return max(factor, round(value / factor) * factor)
+
+    w_bar = _round_factor(width)
+    h_bar = _round_factor(height)
+    if w_bar * h_bar > max_pixels:
+        beta = math.sqrt((width * height) / max_pixels)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+    elif w_bar * h_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (width * height))
+        w_bar = max(factor, math.ceil(width * beta / factor) * factor)
+        h_bar = max(factor, math.ceil(height * beta / factor) * factor)
+    return w_bar, h_bar
+
+
+def _resize_image(img, width: int, height: int):
+    from PIL import Image
+
+    return img.resize((int(width), int(height)), Image.LANCZOS)
+
+
 def parse_layout_json(response_text: str) -> list[dict] | None:
     """Extract the layout cell array from a model response; None when unparseable.
 
@@ -145,14 +195,13 @@ def parse_layout_json(response_text: str) -> list[dict] | None:
     for candidate in candidates:
         try:
             data = json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(data, dict):  # tolerate {"cells": [...]} wrappers
-            for value in data.values():
-                if isinstance(value, list):
-                    data = value
-                    break
-        if isinstance(data, list) and all(isinstance(cell, dict) for cell in data):
+            if isinstance(data, dict):  # tolerate {"cells": [...]} wrappers
+                for value in data.values():
+                    if isinstance(value, list):
+                        data = value
+                        break
+            if not (isinstance(data, list) and all(isinstance(cell, dict) for cell in data)):
+                continue
             cells = []
             for cell in data:
                 bbox = cell.get("bbox")
@@ -161,12 +210,17 @@ def parse_layout_json(response_text: str) -> list[dict] | None:
                     continue
                 cells.append(
                     {
+                        # float() inside the try: a non-numeric bbox makes the
+                        # whole candidate unparseable (contract: return None),
+                        # not a half-parsed layout with garbage coordinates.
                         "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
                         "category": category,
                         "text": str(cell.get("text") or ""),
                     }
                 )
             return cells
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
     return None
 
 
@@ -182,11 +236,22 @@ def _formula_to_md(text: str) -> str:
     return text
 
 
+# Category → markdown heading prefix. The chunker's title hierarchy only
+# recognizes ``^#{1,3}\s`` lines, so Title/Section-header cells must carry a
+# real heading level (fitz fallback uses ``## 第 N 页``, same style).
+_MD_PREFIX_BY_CATEGORY = {
+    "Title": "# ",
+    "Section-header": "## ",
+}
+
+
 def layout_to_md(cells: list[dict] | None, *, page_no: int = 0, no_page_hf: bool = True) -> str:
     """Convert layout cells to page Markdown (reference layoutjson2md semantics).
 
-    Picture cells become ``![image](image_{n}.jpg)`` placeholders where ``n``
-    counts pictures across the whole document via ``page_no``-suffixed names
+    Title/Section-header cells get ``# ``/``## `` markdown prefixes so the
+    chunker's header-boundary split and title hierarchy pick them up; Picture
+    cells become ``![image](image_{n}.jpg)`` placeholders where ``n`` counts
+    pictures across the whole document via ``page_no``-suffixed names
     (``image_p{page_no}_{idx}.jpg``) so names are unique per document without
     cross-page state.
     """
@@ -208,7 +273,13 @@ def layout_to_md(cells: list[dict] | None, *, page_no: int = 0, no_page_hf: bool
             items.append(_formula_to_md(text))
             continue
         if text:
-            items.append(text)
+            prefix = _MD_PREFIX_BY_CATEGORY.get(category)
+            if prefix:
+                # Heading text must stay ONE line: an embedded newline inside a
+                # Title/Section-header cell would split into a fake heading
+                # boundary for the chunker's ^#{1,3}\s scanner (review P2-9).
+                text = " ".join(text.split())
+            items.append(prefix + text if prefix else text)
     return "\n\n".join(items)
 
 
@@ -275,13 +346,25 @@ class DotsOcrClient:
             logger.warning("[DotsOcr] health probe failed ({}): {}", self.base_url, exc)
             return False
 
-    def _parse_single_page(self, page_image, page_no: int) -> ParsedPage:
+    def _new_openai_client(self):
+        """One OpenAI client per parse batch (httpx pool reused across page threads)."""
         from openai import OpenAI
 
+        return OpenAI(api_key=config.dot_ocr_api_key or "0", base_url=self.base_url, timeout=300.0)
+
+    def _parse_single_page(self, page_image, page_no: int, client) -> ParsedPage:
         page = ParsedPage(page_no=page_no, md_content="", page_image_jpg=_jpg_bytes(page_image))
         try:
-            client = OpenAI(api_key=config.dot_ocr_api_key or "0", base_url=self.base_url, timeout=300.0)
-            data_uri = _image_to_data_uri(page_image)
+            # Qwen-VL smart_resize: send the model a 28-multiple pre-fitted image
+            # and record THAT input space — bbox remapping in crop_pictures then
+            # has a real (non-1.0) scale back to the rendered page pixels.
+            input_w, input_h = smart_resize(page_image.width, page_image.height)
+            model_image = (
+                page_image
+                if (input_w, input_h) == page_image.size
+                else _resize_image(page_image, input_w, input_h)
+            )
+            data_uri = _image_to_data_uri(model_image)
             response = client.chat.completions.create(
                 model=config.dot_ocr_model,
                 messages=[
@@ -305,8 +388,8 @@ class DotsOcrClient:
                 page.md_content = str(raw)[:65000]
                 return page
             page.layout = cells
-            page.input_width = page_image.width
-            page.input_height = page_image.height
+            page.input_width = input_w
+            page.input_height = input_h
             page.md_content = layout_to_md(cells, page_no=page_no)
             crop_pictures(page, page_image)
         except Exception as exc:  # single-page failure must not kill the batch
@@ -323,9 +406,12 @@ class DotsOcrClient:
         threads = max(1, min(total, int(config.dot_ocr_max_threads)))
         log_rag("parse", backend="dots_ocr", pages=total, threads=threads, dpi=config.dot_ocr_dpi)
         results: dict[int, ParsedPage] = {}
+        # One shared OpenAI client for the whole batch: per-page construction
+        # used to rebuild an HTTP connection pool for every single page.
+        client = self._new_openai_client()
         with ThreadPoolExecutor(max_workers=threads) as pool:
             futures = {
-                pool.submit(self._parse_single_page, img, idx): idx
+                pool.submit(self._parse_single_page, img, idx, client): idx
                 for idx, img in enumerate(page_images)
             }
             for future in as_completed(futures):

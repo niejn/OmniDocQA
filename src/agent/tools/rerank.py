@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import Any
 
 from core.config import config
+from loguru import logger
 
 from .local_reranker import LocalReranker
 
@@ -49,6 +50,14 @@ def get_reranker() -> LocalReranker | TruncateReranker:
     backend = (config.reranker_backend or "local").strip().lower()
     if backend == "none":
         return TruncateReranker()
+    if backend != "local":
+        # Legacy values (e.g. "bocha", removed with the remote reranker) used to
+        # map to local SILENTLY — surface the misconfiguration once.
+        logger.warning(
+            '[Rerank] unsupported RERANKER_BACKEND={backend!r}; falling back to "local" '
+            '(valid values: local | none)',
+            backend=backend,
+        )
     return LocalReranker()
 
 

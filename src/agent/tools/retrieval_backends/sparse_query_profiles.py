@@ -12,9 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from loguru import logger
-
 from core.config import config
+from loguru import logger
 
 _FINANCE_SECTION_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("management_discussion", ("md&a", "management discussion", "results of operations", "管理层讨论")),
@@ -128,21 +127,23 @@ def build_sparse_query_plan(
     narrative_targets: tuple[str, ...] = (),
     term_targets: tuple[str, ...] = (),
 ) -> SparseQueryPlan:
-    """构造稀疏检索查询计划，按配置 scope 选择检索配置。
+    """构造稀疏检索查询计划（finance_v1 / generic_v1）。
 
-    scope 来自 OPENSEARCH_SPARSE_SEARCH_SCOPE，默认 "finance"。
-    - "exam" 已废弃：打 warning 并强制回退 "finance"。
-    - "finance"/"all"：走 _build_finance_plan，带 domain 硬过滤 + 金融章节/term 的 should 加分。
-    - 其它 scope：generic_v1，仅对 title/search_hints/text 做朴素多字段全文匹配，无金融加分。
+    M5-prime 已从 Config 移除 OPENSEARCH_SPARSE_SEARCH_SCOPE：本函数改为防御式
+    读取（getattr，无该字段），因此 scope 恒为 "finance" —— 当前实际只走
+    ``_build_finance_plan``（domain 硬过滤 + 金融章节/term 加分）；"exam" 分支
+    已废弃（仅保留 warning 兜底），generic_v1 朴素全文匹配分支保留作扩展点但
+    因 scope 恒为 finance 而未激活。若要恢复 scope 配置，需先在 core/config.py
+    重新暴露该字段。
+
     narrative_targets / term_targets 来自 EvidencePlan，用于 finance 分支构造加分项。
 
-    # 两阶段："filter 先选候选集 → BM25(multi_match)在候选集内打分"。
-    # document_ids/levels 等 filter 被塞入 bool.filter（不计分），
-    # multi_match 的 title^2/search_hints^3/text 只对通过 filter 的文档做 BM25 评分。
-    # 这与 Milvus 稀疏向量内积完全不同：此处 sparse=BM25 关键词搜索，非向量内积。
-    # Milvus 的 bm25_k1（词频饱和）和 bm25_b（长度归一化）目前没有在本项目暴露；
-    # title^N/search_hints^N 是 OpenSearch 字段 boost，不能等价替代 k1/b。
-    scope = (config.opensearch_sparse_search_scope or "finance").strip().lower()
+    两阶段："filter 先选候选集 → BM25(multi_match)在候选集内打分"。
+    document_ids/levels 等 filter 被塞入 bool.filter（不计分），
+    multi_match 的 title^2/search_hints^3/text 只对通过 filter 的文档做 BM25 评分。
+    这与 Milvus 稀疏向量内积完全不同：此处 sparse=BM25 关键词搜索，非向量内积。
+    Milvus 的 bm25_k1（词频饱和）和 bm25_b（长度归一化）目前没有在本项目暴露；
+    title^N/search_hints^N 是字段 boost，不能等价替代 k1/b。
     """
     # M5-prime removed OPENSEARCH_SPARSE_SEARCH_SCOPE from Config; read defensively
     # so the finance profile stays the default instead of AttributeError-ing.

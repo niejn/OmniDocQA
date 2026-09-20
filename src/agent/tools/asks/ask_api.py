@@ -2,23 +2,33 @@
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+from core.config import config
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
 from pydantic import BaseModel, Field
-
-from core.config import config
 from tools.chinese_converter import get_converter
 from tools.evaluation_pipeline import run_pending_evaluations
 from tools.finance.product_surface import get_finance_product_spec
 from tools.llamaindex_retrieval import retrieval_service
 from tools.llm import get_llm
-from tools.rag_service import answer_question, stream_answer_events
+from tools.rag_service import (
+    MultimodalModeAskError,
+    answer_question,
+    ensure_ask_mode_allowed,
+    stream_answer_events,
+)
 
 router = APIRouter(prefix="/api/ask", tags=["Ask Generation"])
+
+
+def _multimodal_conflict(exc: MultimodalModeAskError) -> HTTPException:
+    """Map the multimodal-mode guard to 409 Conflict (a mode problem, not a server bug)."""
+    logger.warning("[AskAPI] rejected under DENSE_BACKEND=milvus_multimodal: {}", exc)
+    return HTTPException(status_code=409, detail=str(exc))
 
 
 def _default_ask_top_k() -> int:
@@ -31,10 +41,10 @@ def _default_vector_search_top_k() -> int:
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000)
-    document_ids: List[int] = Field(..., min_length=1, max_length=200)
+    document_ids: list[int] = Field(..., min_length=1, max_length=200)
     top_k: int = Field(default_factory=_default_ask_top_k, ge=1, le=50)
     detail_level: str = Field(default="detailed", pattern="^(brief|detailed|comprehensive)$")
-    report_locale: Optional[str] = Field(
+    report_locale: str | None = Field(
         default=None,
         description="产品层报告语言：zh / en / auto（按问题推断，默认 auto）",
     )
@@ -55,14 +65,14 @@ class AskResponse(BaseModel):
     confidence: float
     sources_used: int
     citation_count: int = Field(default=0, description="内部检索生成的引用条数（不返回引用正文）")
-    limitations: Optional[str] = None
-    trace_id: Optional[str] = None
-    latency_ms: Optional[float] = None
-    pipeline_trace: Optional[Dict[str, Any]] = None
-    vertical_scenario: Optional[Dict[str, Any]] = None
-    external_evaluation: Optional[Dict[str, Any]] = None
-    evidence_ui: Optional[Dict[str, Any]] = None
-    report_locale: Optional[str] = Field(default=None, description="解析后的报告语言 zh 或 en")
+    limitations: str | None = None
+    trace_id: str | None = None
+    latency_ms: float | None = None
+    pipeline_trace: dict[str, Any] | None = None
+    vertical_scenario: dict[str, Any] | None = None
+    external_evaluation: dict[str, Any] | None = None
+    evidence_ui: dict[str, Any] | None = None
+    report_locale: str | None = Field(default=None, description="解析后的报告语言 zh 或 en")
 
 
 class ParseDocumentsRequest(BaseModel):
@@ -70,10 +80,10 @@ class ParseDocumentsRequest(BaseModel):
 
 
 class DocumentRequirements(BaseModel):
-    titles: Optional[List[str]] = Field(default=[])
-    authors: Optional[List[str]] = Field(default=[])
-    topics: Optional[List[str]] = Field(default=[])
-    document_type: Optional[str] = Field(default="both")
+    titles: list[str] | None = Field(default=[])
+    authors: list[str] | None = Field(default=[])
+    topics: list[str] | None = Field(default=[])
+    document_type: str | None = Field(default="both")
 
 
 class ParseDocumentsResponse(BaseModel):
@@ -84,21 +94,21 @@ class ParseDocumentsResponse(BaseModel):
 
 class DocumentVectorSearchRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000)
-    document_ids: List[int] = Field(..., min_length=1, max_length=200)
+    document_ids: list[int] = Field(..., min_length=1, max_length=200)
     top_k: int = Field(default_factory=_default_vector_search_top_k, ge=1, le=20)
 
 
 class DocumentVectorSearchResult(BaseModel):
     document_id: int
-    title: Optional[str] = None
-    authors: Optional[str] = None
+    title: str | None = None
+    authors: str | None = None
     score: float = Field(..., ge=0.0, le=1.0)
-    top_chunks: List[Dict[str, Any]] = Field(default=[])
+    top_chunks: list[dict[str, Any]] = Field(default=[])
 
 
 class DocumentVectorSearchResponse(BaseModel):
     success: bool
-    documents: List[DocumentVectorSearchResult]
+    documents: list[DocumentVectorSearchResult]
     total_searched: int
     total_found: int
 
@@ -146,6 +156,8 @@ async def generate_answer(request: AskRequest):
             evidence_ui=result.get("evidence_ui"),
             report_locale=result.get("report_locale"),
         )
+    except MultimodalModeAskError as exc:
+        raise _multimodal_conflict(exc) from exc
     except Exception as exc:
         logger.exception("[AskAPI] generate failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -153,6 +165,12 @@ async def generate_answer(request: AskRequest):
 
 @router.post("/generate/stream")
 async def generate_answer_stream(request: AskRequest):
+    # The multimodal-mode guard must run BEFORE streaming starts: once
+    # StreamingResponse has emitted headers the status can no longer become 409.
+    try:
+        ensure_ask_mode_allowed()
+    except MultimodalModeAskError as exc:
+        raise _multimodal_conflict(exc) from exc
     try:
         return StreamingResponse(
             stream_answer_events(

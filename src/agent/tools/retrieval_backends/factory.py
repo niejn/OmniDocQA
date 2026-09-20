@@ -1,4 +1,9 @@
-"""Factories for retrieval backend selection."""
+"""Factories for retrieval backend selection.
+
+M5 reality: dense = ``milvus`` | ``milvus_multimodal``; sparse = ``milvus`` |
+``postgres`` | ``none``. Qdrant and OpenSearch were removed (fail-fast errors
+below name the removal for stale envs).
+"""
 
 from __future__ import annotations
 

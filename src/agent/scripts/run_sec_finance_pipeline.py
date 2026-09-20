@@ -2,7 +2,7 @@
 """
 SEC companyfacts（财务）入库 + 可选问答 / 查 SQL 观测。
 
-在 src/agent 目录执行（需 .env、Postgres、Qdrant；OpenSearch 若 SPARSE_BACKEND=opensearch）::
+在 src/agent 目录执行（需 .env、Postgres、Milvus）::
 
     cd src/agent
     ..\\venv\\Scripts\\python.exe scripts\\run_sec_finance_pipeline.py ingest-direct
@@ -626,8 +626,8 @@ async def cmd_sql_sample(document_id: int, limit: int) -> None:
     _load_env()
     if str(AGENT_ROOT) not in sys.path:
         sys.path.insert(0, str(AGENT_ROOT))
-    from tools.node_repository import ensure_schema
     from tools.finance.financial_facts_repository import query_observations
+    from tools.node_repository import ensure_schema
 
     await ensure_schema()
     rows = await query_observations(document_id=document_id, limit=limit)
@@ -699,7 +699,10 @@ def cmd_list_accessions(json_path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     if str(AGENT_ROOT) not in sys.path:
         sys.path.insert(0, str(AGENT_ROOT))
-    from tools.finance.sec_company_facts import is_sec_company_facts_payload, list_accessions_from_company_facts
+    from tools.finance.sec_company_facts import (
+        is_sec_company_facts_payload,
+        list_accessions_from_company_facts,
+    )
 
     if not is_sec_company_facts_payload(data):
         raise SystemExit("JSON 不是 SEC companyfacts（需 cik + facts）")
@@ -777,7 +780,10 @@ def _accession_meta_from_companyfacts(
     """Map accession -> {form, filed}; plus root cik / entityName."""
     if str(AGENT_ROOT) not in sys.path:
         sys.path.insert(0, str(AGENT_ROOT))
-    from tools.finance.sec_company_facts import flatten_sec_company_facts, is_sec_company_facts_payload
+    from tools.finance.sec_company_facts import (
+        flatten_sec_company_facts,
+        is_sec_company_facts_payload,
+    )
 
     if not is_sec_company_facts_payload(data):
         return {}, None, None
@@ -895,7 +901,7 @@ async def cmd_ingest_edgar_local(
 
 
 async def cmd_reindex_vectors(document_id: int) -> None:
-    """Rebuild Qdrant + OpenSearch from Postgres rag_nodes (repairs missing dense/sparse)."""
+    """Rebuild dense/sparse indexes from Postgres rag_nodes (repairs missing vectors)."""
     _load_env()
     if str(AGENT_ROOT) not in sys.path:
         sys.path.insert(0, str(AGENT_ROOT))
@@ -1059,7 +1065,10 @@ def main() -> None:
         if group_name:
             if str(AGENT_ROOT) not in sys.path:
                 sys.path.insert(0, str(AGENT_ROOT))
-            from tools.document_groups import default_document_groups_path, load_document_groups
+            from tools.document_groups import (
+                default_document_groups_path,
+                load_document_groups,
+            )
 
             gf = (args.group_file or default_document_groups_path()).resolve()
             if not gf.is_file():
