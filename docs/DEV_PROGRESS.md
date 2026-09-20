@@ -11,11 +11,11 @@
 | 稀疏检索 | ✅ Milvus BM25 + text 加权 + 查询侧 scope（M5' 后 milvus/postgres/none 三选, 默认 milvus） | opensearch 已于 2026-09-15 全量移除；09-19 顺带修复 M5' 遗留 sparse_query_profiles 断链（见总结报告"注意事项"） |
 | 融合 | 应用层 RRF（k=60） | 1C/M6 计划下沉 Milvus `hybrid_search`，评测门禁未过不切 |
 | Reranker | ✅ 本地 Qwen3-Reranker-4B | `RERANKER_BACKEND=local`（Bocha 回退已于 2026-09-16 移除，仅 local/none）；不下沉 Milvus（见"关键结论"） |
-| RAGAS 评测 | ⚠️ R1 已修 + R2 链路改造已落（09-19），指标覆盖 2→5 | ragas 0.4.4.dev9 可用；`rag_evaluation_jobs.reference` 列已迁移真库，`_score_job` 按有/无参考路由；R2 补标脚本与 R3 全量指标未做 |
+| RAGAS 评测 | ⚠️ R1 修复 + R2 链路/补标脚本就绪 + R3/R4 flag 已接（09-20） | ragas 0.4.4.dev9 可用；reference 列已迁移，补标 84/100（16 题待 ark 配额 09-23 重置后续跑）；R3 embeddings 系/R4 多模态系默认关待实战 |
 | 生成 LLM | ✅ glm-5.3 走 ark 套餐端点 | 模型名带连字符，`glm5.3` 会被 404 |
 | M4 质量门禁 | ✅ 定论(2026-09-15, 用户决策): 接受误差 | faithfulness +2.14% PASS; context_precision -3.95% 已归因(OS 假阳性+源数据缺失), 接受不再对照; opensearch 已移除 |
 | **多模态文档库（第二部分 + 第三部分前端）** | ✅ **2026-09-19 全量交付** | MM-1/2/3/4 + T2.5 评测门禁全部完成并真机验收，含资产 GC 与二期 MinIO；总结报告见文末 |
-| 第五部分（通用化：用户上传 PDF→入库→问答→评测） | ❌ 未开发 | 需求在迁移文档 §8.5；多模态底座已就绪 |
+| 第五部分（通用化：用户上传 PDF→入库→问答→评测） | ✅ **2026-09-20 v1 交付** | 上传/文档管理/动态 collection v1/testset 生成+评测运行 9 端点 + 前端全套；v1 简化项见 09-20 节待办表 |
 
 ## 已完成时间线
 
@@ -224,3 +224,31 @@ Milvus 原生"重排"只有 `hybrid_search` 的 **RRFRanker/WeightedRanker**—�
 - `ingestion_service.py`：DENSE_BACKEND=milvus_multimodal 时文本 ingest 无守卫，向量静默丢失（入口 fail-fast）。
 
 **P2 摘要**：注释/文档残留 Qdrant/OpenSearch 表述、`requirements.txt` torch `file:///C:/` 本机 wheel 路径（其它机器装不上）、delete 脚本 `--skip-pg` 分支漏多模态检测、create_set 并发重名 TOCTOU 应 422、chunker `embed_fn` 抛异常不降级、dots.ocr 每页新建 OpenAI 客户端、`rag_service` 多模态守卫返回 500 而非 4xx 等。
+
+## 2026-09-20 全量续作：审查修复闭环 + R2/R3/R4/1C/第五部分通用化
+
+上一节清单**全部修完**（1 P0 + 8 P1 + P2 批量），并完成主计划剩余需求开发。四波推进：Wave1 三线并行修复（后端/评测线/前端）→ Wave2 documents 后端+前端对接 → Wave2.5 R4+1C → Review 轮（三路并行审查）→ 修复轮（1 P0 + 4 P1 后端 + 2 P1 前端 + P2 批量全修）。**单测 142 → 280 全绿；ruff 改动文件全清；tsc/eslint 双零。**
+
+### 交付内容
+
+- **审查修复闭环**：GC 三道互锁（collection 缺失/空对账+磁盘非空/行数截断 → `--apply` abort + `--force` 逃生门）；dense_milvus_multimodal 先全量向量化+dim 校验再 delete+insert；FixedWindowRateLimiter 全程持锁；dots.ocr smart_resize 预缩放（bbox 重映射真实生效）+ Title/Section-header→`#`/`##` 前缀（主路径标题分块契约修复，chunker `_HEADER_RE` 兼容）+ 客户端复用 + bbox 容错；ingestion 三入口多模态守卫；/ask 守卫 500→409（含 stream 响应头前失败）；删除级联顺序改为 **向量→资产→PG 最后**（部分失败可重试）；rerank 非法 backend 告警；测试密封性修复。
+- **R2 补标**：`scripts/generate_reference_answers.py`（检索增强出参考答案 + checkpoint 断点续跑 + `--enqueue` 入队）。真机跑批 **84/100 成功**（`tools/data/narrative_reference_answers.json`），16 题因 **ark 账户月度配额耗尽**（429 AccountQuotaExceeded，2026-09-23 23:59 重置）失败——重置后重跑同命令即自动续跑补齐。
+- **R3 embeddings 指标**：`evaluation_pipeline` 有参考路由追加 AnswerCorrectness/AnswerSimilarity/ResponseRelevancy（`EVAL_EMBEDDINGS_METRICS_ENABLED` 默认关，构造失败自动降级回 4 指标）。
+- **R4 多模态指标**：`run_multimodal_eval.py --ragas-multimodal` flag（默认关），MultiModalFaithfulness/Relevance 双路径导入验证可用，逐行降级不影响硬断言与门禁；真机出分待 vLLM 重入库含图 PDF。
+- **1C 融合下沉**：`rrf_scores/rrf_fuse` 纯函数抽取 + `milvus_store.hybrid_search`（RRFRanker k=60，dense/sparse 等深池）+ `FUSION_BACKEND=app|milvus`（**默认 app 行为不变**）+ 一致性单测 11 项。真机对账（rag_nodes 7541 点）：**overlap@10=10/10、分数逐位一致（±1e-6）、耗时 64.7ms→10.7ms**。
+- **第五部分通用化（§8.5）**：9 端点——`POST /upload`（multipart `file`+可选 `collection`，同步六步入库，UploadRejectedError→422 矩阵）、`GET /documents`（裸数组）、`DELETE /documents/{id}`（共享级联）、`POST/GET /collections`（动态 collection v1：注册表+Milvus 建库+kind 字段；**v1 简化：embedding_provider 仅登记，未做按库切模型**）、ask `collection` 路由、`generate-testset`/`testset/{job_id}`/`evaluate`（复用 T2.5 出题/评测核心，进程内 jobs v1）。前端：上传面板（拖拽/校验/集合选择/新建集合）、文档列表管理、动态库下拉、EvalPanel（生成→轮询→运行评测→指标摘要，链式 setTimeout+代际 token 防竞态）。
+- **上传可靠性**：document_id 分配竞态修复（**占位行状态机 ingesting→completed/failed**，UniqueViolation 重试，列表过滤非 completed）；同步段全部 `to_thread` 出事件循环（上传期间不再冻结 /ask）；页数守卫前置光栅化（防 OOM）；PG 注册失败 best-effort 回滚 Milvus+资产。
+- **附带修复**：`delete_ingested_document.py` argparse dest 不匹配必崩（review 轮新发现 P0）；评测门禁纳入 scope_violation（lower=better）；apply_ragas_multimodal never-raise 收紧；JOBS 上限 50 淘汰；collections 探测并发化。
+
+### 剩余待办（更新）
+
+| 项 | 依赖 | 说明 |
+|---|---|---|
+| R2 补齐 16 题 | ark 配额 2026-09-23 重置 | 重跑 `generate_reference_answers.py`（checkpoint 自动续） |
+| R3 实战出分 | R2 补齐 | 开 `EVAL_EMBEDDINGS_METRICS_ENABLED=true` 后跑评测 |
+| R4 真机出分 | dots.ocr vLLM 部署决策 | flag 已就绪；含图 PDF 重入库后验收 |
+| 1C 切换 milvus 融合 | 评测门禁 | 代码+一致性已就绪（默认 app），M6 门禁过了再切 |
+| 动态 collection 按库切 embedding 模型 | — | v1 仅登记未实现 |
+| jobs 持久化 | — | 进程内 dict，重启丢失（v1 声明） |
+| R5/R6/R7 | R2/R3 实战数据 | 选型排行榜/组件 A/B/持续回归 |
+| dots.ocr vLLM 部署决策 | — | 详设 §12；bbox 裁剪偏移真机验证同批做 |
