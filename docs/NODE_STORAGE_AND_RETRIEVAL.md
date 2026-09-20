@@ -2,7 +2,7 @@
 
 ## Overview
 
-RAGAS-FINANCE uses a document section tree, not an entity-relationship
+OmniDocQA uses a document section tree, not an entity-relationship
 knowledge graph. A document is split into leaf chunks and section nodes are
 created from the chunks' `section_path` values.
 

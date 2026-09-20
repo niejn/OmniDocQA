@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-RAGAS-FINANCE is a node-centric RAG system for SEC-style financial filings. It ingests EDGAR HTML into a section tree (leaf nodes = chunks), stores them in Postgres with dense vectors in Qdrant and sparse indexes in Postgres/OpenSearch, then answers questions via hybrid retrieval + optional reranking + LLM generation. A Next.js frontend provides the UI.
+OmniDocQA (formerly RAGAS-FINANCE) is an evaluation-first, node-centric RAG system. It started as SEC-style financial filings QA and grew into a general multimodal document QA platform: text documents are ingested into a section tree (leaf nodes = chunks) in Postgres with dense+BM25 vectors in Milvus; arbitrary PDFs go through a multimodal pipeline (dots.ocr/VLM/fitz → text+image chunks → `rag_multimodal` collection). Answers come from hybrid retrieval (RRF fusion) + local cross-encoder reranking + LLM generation with evidence cards, and the whole stack is measurable via RAGAS metrics with hard-assertion gates. A Next.js frontend provides the UI (`/` for SEC QA, `/documents` for the document library).
 
 ## Commands
 
 ### Infrastructure (from repo root)
 
 ```bash
-docker compose -f docker-compose.rag.yml up -d    # Postgres + Qdrant (+ OpenSearch if SPARSE_BACKEND=opensearch)
+docker compose -f docker-compose.rag.yml up -d    # Postgres + Milvus (+ rag-minio asset store)
 ```
 
 ### Backend (src/agent)
@@ -79,8 +79,8 @@ All settings live in `src/agent/core/config.py` as a Pydantic `Config` class, lo
 
 Key config dimensions:
 - **Model selection**: `DEFAULT_MODEL` (e.g. `deepseek/deepseek-chat`, `openai/gpt-4o`). API keys: `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `QWEN_API_KEY`, `ANTHROPIC_API_KEY`.
-- **Embedding**: `EMBEDDING_PROVIDER` (auto/qwen/openai), `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` (must match Qdrant collection).
-- **Retrieval backends**: `DENSE_BACKEND=qdrant`, `SPARSE_BACKEND=postgres|opensearch`.
+- **Embedding**: `EMBEDDING_PROVIDER` (auto/qwen/openai), `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` (must match Milvus collection).
+- **Retrieval backends**: `DENSE_BACKEND=milvus|milvus_multimodal`, `SPARSE_BACKEND=milvus|postgres|none`. Fusion: `FUSION_BACKEND=app` (default) or `milvus` hybrid_search.
 - **Context assembly**: `CONTEXT_CHAR_BUDGET` (char-based budget mode), `CONTEXT_SIBLING_*` (sibling expansion), `SECTION_TREE_SEARCH_DEPTH`.
 - **Finance routing**: `FINANCE_SQL_ROUTING_ENABLED`, `FINANCE_LLM_ROUTE_ONLY`, `FINANCE_SQL_NARROW_RAG_*`.
 
@@ -88,7 +88,7 @@ Key config dimensions:
 
 1. **Request** → `src/agent/tools/asks/ask_api.py` validates params and delegates to `rag_service.answer_question()`
 2. **Finance intent** → `src/agent/tools/finance/finance_intent.py` routes the question: rule-first keyword matching (`question_router.py`), LLM fallback for ambiguous cases. Produces a `FinanceRoute` (need_sql, need_rag) and optionally a `FinanceQueryPlan` via LLM (`finance_query_plan_llm.py`).
-3. **Retrieval** → `src/agent/tools/llamaindex_retrieval.py`: hybrid search combining dense (Qdrant via `retrieval_backends/dense_qdrant.py`) and sparse (Postgres full-text or OpenSearch via `retrieval_backends/sparse_postgres.py` / `sparse_opensearch.py`). Narrative queries use section-tree search (hit section nodes → expand to leaf descendants).
+3. **Retrieval** → `src/agent/tools/llamaindex_retrieval.py`: hybrid search combining dense (`retrieval_backends/dense_milvus.py`) and sparse (Milvus BM25 via `retrieval_backends/sparse_milvus.py`, or Postgres full-text via `sparse_postgres.py`), fused by RRF (k=60) in-process or pushed down to Milvus `hybrid_search` when `FUSION_BACKEND=milvus`. Narrative queries use section-tree search (hit section nodes → expand to leaf descendants).
 4. **Context assembly**: sibling expansion around top seeds, char-budget-based truncation (`CONTEXT_CHAR_BUDGET`), optional title-match guarantees for `narrative_targets`.
 5. **Rerank** (optional): local CrossEncoder reranker (`local_reranker.py`), multi-facet rerank for narrative (`narrative_multi_rerank.py`).
 6. **SQL evidence** (finance): when `need_sql=true`, queries `sec_financial_observations` table (`financial_facts_repository.py`) and optionally narrows RAG hits by matching accessions/metrics (`sql_evidence_narrowing.py`).
@@ -97,13 +97,13 @@ Key config dimensions:
 
 ### Ingest pipeline
 
-`src/agent/tools/ingestion_service.py` orchestrates: parse EDGAR HTML (`edgar_htm_parser.py` + `edgar_htm_enricher.py`) → build section tree → chunk leaves → write nodes to Postgres (`node_repository.py`) → upsert dense vectors to Qdrant → index sparse text to Postgres/OpenSearch. Optional companyfacts JSON alignment for metadata (form, filing date, entity name).
+`src/agent/tools/ingestion_service.py` orchestrates: parse EDGAR HTML (`edgar_htm_parser.py` + `edgar_htm_enricher.py`) → build section tree → chunk leaves → write nodes to Postgres (`node_repository.py`) → upsert dense vectors to Milvus → index sparse text (Milvus BM25 or Postgres). Optional companyfacts JSON alignment for metadata (form, filing date, entity name). PDF ingestion for the document library is a separate pipeline: `multimodal_ingest.ingest_one_pdf` (dots.ocr/vLLM parse with fitz fallback → heading/semantic chunking → VLM image description → ark multimodal embeddings → `rag_multimodal` collection + assets in local disk/MinIO), exposed via `scripts/ingest_multimodal_pdf.py` and `POST /agent/api/documents/upload`.
 
 ### Key data stores
 
-- **Postgres** (`rag_documents`, `rag_nodes`, `rag_ingest_runs`, `sec_financial_observations`, `rag_evaluation_jobs`): node storage, sparse full-text search, SEC facts, eval queue.
-- **Qdrant** (`rag_nodes` collection): dense vector search.
-- **OpenSearch** (optional): alternative sparse backend with finance-tuned analyzer profiles.
+- **Postgres** (`rag_documents`, `rag_nodes`, `rag_ingest_runs`, `sec_financial_observations`, `rag_evaluation_jobs`, `document_sets`, `document_collections`): node storage, sparse full-text search, SEC facts, eval queue, document-library sets and dynamic collections.
+- **Milvus** (`rag_nodes` 1536-dim text+BM25, `rag_multimodal` 2048-dim): dense vector search for both pipelines.
+- **MinIO** (optional, `rag-minio` on host 9002/9003): multimodal page/figure assets; default asset store is local disk (`MULTIMODAL_ASSET_STORE=local|minio`).
 
 ### Retrieval backends
 

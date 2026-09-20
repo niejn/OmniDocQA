@@ -77,7 +77,7 @@ GPT-4o 在专业领域（如医药问答）容易生成不存在的药物相互�
 
 ## 与本项目的差距（待改进项）
 
-对比 RAGAS-FINANCE 当前实现：
+对比 OmniDocQA（原 RAGAS-FINANCE）当前实现：
 
 1. **图检索层缺失** — 仅有 section tree 的 parent_id 层级关系，无跨文档引用图和无图遍历检索
 2. **无句子级精准检索** — 最小检索单元是段落块（1500 字符），缺少 sentence-level retrieval

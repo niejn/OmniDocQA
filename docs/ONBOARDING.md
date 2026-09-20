@@ -1,12 +1,12 @@
-# 📘 RAGAS-FINANCE — Onboarding Guide
+# 📘 OmniDocQA — Onboarding Guide
 
 > Generated from the project knowledge graph (`.ua/knowledge-graph.json`, analyzed at commit `12587093`). The graph is current with `HEAD`.
 
 ## 1. Project Overview
 
-**Name:** `rag-api` (repo: RAGAS-FINANCE)
+**Name:** `rag-api` (repo: OmniDocQA, formerly RAGAS-FINANCE)
 
-**What it is:** A **node-centric RAG system for SEC-style financial filings**. It ingests EDGAR HTML into a section tree (leaf nodes = chunks), stores them in Postgres with dense vectors in Qdrant and sparse indexes in Postgres/OpenSearch, then answers questions via **hybrid retrieval + optional reranking + LLM generation**. A Next.js frontend provides the UI.
+**What it is:** An **evaluation-first, node-centric multimodal RAG platform** (started as SEC-style financial filings QA). Text filings are ingested into a section tree (leaf nodes = chunks) in Postgres with dense+BM25 vectors in Milvus; arbitrary PDFs go through a multimodal pipeline (dots.ocr/VLM/fitz → text+image chunks → `rag_multimodal` collection). Answers come from **hybrid retrieval (RRF) + local reranking + LLM generation** with evidence cards, measured via RAGAS metrics with hard-assertion gates. A Next.js frontend provides the UI (`/` SEC QA, `/documents` document library).
 
 **Languages:** Python, TypeScript, JavaScript, CSS, YAML, TOML, JSON, Markdown, Dockerfile, Shell
 
