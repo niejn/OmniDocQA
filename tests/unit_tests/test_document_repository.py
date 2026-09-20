@@ -217,3 +217,106 @@ def test_set_id_missing_is_404(patched_repo):
     with pytest.raises(DocumentAskError) as exc_info:
         _norm(set_id="nope")
     assert exc_info.value.status_code == 404
+
+
+# ── placeholder-row lifecycle (review P1-2) — fake pool, no server ───────
+
+
+class _CaptureConn:
+    """Records every statement; optional scripted fetchrow/execute results."""
+
+    def __init__(self, captured: list, *, fetchrow_result=None, execute_result="INSERT 0 1"):
+        self.captured = captured
+        self._fetchrow_result = fetchrow_result
+        self._execute_result = execute_result
+
+    async def fetchrow(self, query, *args):
+        self.captured.append(("fetchrow", query, args))
+        return self._fetchrow_result
+
+    async def fetch(self, query, *args):
+        self.captured.append(("fetch", query, args))
+        return []
+
+    async def execute(self, query, *args):
+        self.captured.append(("execute", query, args))
+        return self._execute_result
+
+
+class _CapturePool:
+    def __init__(self, captured: list, **conn_kwargs: object) -> None:
+        self.captured = captured
+        self._conn_kwargs = conn_kwargs
+
+    def acquire(self):
+        conn = _CaptureConn(self.captured, **self._conn_kwargs)
+
+        class _Ctx:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        return _Ctx()
+
+
+def test_insert_placeholder_document_writes_ingesting_metadata(monkeypatch):
+    captured: list = []
+
+    async def fake_get_pool():
+        return _CapturePool(captured)
+
+    # document_repository binds get_pool at module import → patch there.
+    monkeypatch.setattr(repo, "get_pool", fake_get_pool)
+
+    asyncio.run(
+        repo.insert_placeholder_document(9806, collection="mm_col", filename="ch1.pdf")
+    )
+
+    kind, query, args = captured[0]
+    assert kind == "execute"
+    assert "INSERT INTO rag_documents" in query
+    import json
+
+    doc_id, metadata_json = args
+    assert doc_id == 9806
+    metadata = json.loads(metadata_json)
+    assert metadata["source"] == "multimodal_pdf"
+    assert metadata["status"] == "ingesting"
+    assert metadata["collection"] == "mm_col"
+    assert metadata["filename"] == "ch1.pdf"
+
+
+def test_mark_document_ingest_status_flips_status(monkeypatch):
+    captured: list = []
+
+    async def fake_get_pool():
+        return _CapturePool(captured, execute_result="UPDATE 1")
+
+    monkeypatch.setattr(repo, "get_pool", fake_get_pool)
+
+    updated = asyncio.run(repo.mark_document_ingest_status(9806, "failed"))
+
+    assert updated is True
+    kind, query, args = captured[0]
+    assert kind == "execute"
+    assert "jsonb_set" in query and "{status}" in query
+    assert args == (9806, "failed")
+
+
+def test_multimodal_document_overview_filters_non_completed(monkeypatch):
+    """The overview SQL excludes status=ingesting/failed placeholders (P1-2 step 5)."""
+    captured: list = []
+
+    async def fake_get_pool():
+        return _CapturePool(captured)
+
+    monkeypatch.setattr(repo, "get_pool", fake_get_pool)
+
+    asyncio.run(repo.multimodal_document_overview())
+
+    _, query, _args = captured[0]
+    assert "COALESCE(metadata->>'status', 'completed') = 'completed'" in query
+    assert "metadata->>'source' = 'multimodal_pdf'" in query
+    assert "ORDER BY id DESC" in query
