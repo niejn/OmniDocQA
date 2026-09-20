@@ -16,6 +16,7 @@ sets cap at 500 chunk ids (422 above), filter/enumerated kinds are exclusive.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any
 
@@ -27,6 +28,10 @@ MAX_ENUM_CHUNKS = 500
 MAX_SETS = 200
 
 SET_KINDS = ("filter", "enumerated")
+
+# Dynamic-collection registry (§8.5.3 v1): names are Milvus-collection safe
+# (lowercase start, lowercase/digit/underscore, 3-32 chars).
+COLLECTION_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,31}$")
 
 
 class DocumentSetError(Exception):
@@ -145,6 +150,207 @@ async def delete_set(set_id: str) -> bool:
         return False
     logger.info("[DocumentSets] deleted set {}", set_id)
     return True
+
+
+# ── dynamic-collection registry (§8.5.3 v1) ──────────────────────────────
+
+
+async def ensure_collections_table() -> None:
+    """Idempotent CREATE TABLE for the dynamic-collection registry (ensure_sets_table pattern)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_collections (
+                collection_name    TEXT PRIMARY KEY,
+                embedding_provider TEXT,
+                description        TEXT,
+                created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+
+
+def validate_collection_name(name: str) -> str:
+    clean = str(name or "").strip()
+    if not COLLECTION_NAME_RE.fullmatch(clean):
+        raise DocumentSetError(
+            "collection name must match ^[a-z][a-z0-9_]{2,31}$ (lowercase start, 3-32 chars)"
+        )
+    return clean
+
+
+async def insert_dynamic_collection(
+    *, collection_name: str, embedding_provider: str | None, description: str | None
+) -> dict[str, Any]:
+    """Register one dynamic collection; UniqueViolationError propagates (422 upstream)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO document_collections (collection_name, embedding_provider, description)
+            VALUES ($1, $2, $3)
+            RETURNING collection_name, embedding_provider, description, created_at
+            """,
+            collection_name,
+            embedding_provider,
+            description,
+        )
+    return {
+        "collection_name": row["collection_name"],
+        "embedding_provider": row["embedding_provider"],
+        "description": row["description"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+async def get_dynamic_collection(collection_name: str) -> dict[str, Any] | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT collection_name, embedding_provider, description, created_at "
+            "FROM document_collections WHERE collection_name = $1",
+            str(collection_name),
+        )
+    if row is None:
+        return None
+    return {
+        "collection_name": row["collection_name"],
+        "embedding_provider": row["embedding_provider"],
+        "description": row["description"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+async def list_dynamic_collections() -> list[dict[str, Any]]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT collection_name, embedding_provider, description, created_at "
+            "FROM document_collections ORDER BY created_at DESC"
+        )
+    return [
+        {
+            "collection_name": row["collection_name"],
+            "embedding_provider": row["embedding_provider"],
+            "description": row["description"],
+            "created_at": row["created_at"].isoformat(),
+        }
+        for row in rows
+    ]
+
+
+# ── multimodal document inventory (upload API §8.5.2) ────────────────────
+
+
+async def multimodal_document_exists(document_id: int) -> bool:
+    """True when rag_documents holds a row for this id (DELETE /documents/{id} 404 gate)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM rag_documents WHERE id = $1", int(document_id)
+        )
+    return row is not None
+
+
+# Placeholder-row lifecycle (review P1-2): uploads RESERVE their document_id by
+# inserting this row immediately after allocation, so two concurrent uploads can
+# never ingest into the same id. status=ingesting → completed (final upsert) /
+# failed (upload failure UPDATE). The row stays in place on failure so the
+# DELETE cascade can clean it up later.
+PLACEHOLDER_SOURCE = "multimodal_pdf"
+
+
+async def insert_placeholder_document(document_id: int, *, collection: str, filename: str) -> None:
+    """INSERT the upload placeholder row; asyncpg.UniqueViolationError propagates
+    (allocate_document_id retries with the next candidate). rag_documents has no
+    NOT NULL columns besides id/metadata, so id + metadata are sufficient."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO rag_documents (id, title, source_uri, file_type, metadata)
+            VALUES ($1, NULL, NULL, 'multimodal_pdf', $2::jsonb)
+            """,
+            int(document_id),
+            json.dumps(
+                {
+                    "source": PLACEHOLDER_SOURCE,
+                    "status": "ingesting",
+                    "collection": collection,
+                    "filename": filename,
+                }
+            ),
+        )
+
+
+async def mark_document_ingest_status(document_id: int, status: str) -> bool:
+    """Flip the placeholder row's metadata.status (ingesting → failed); False when
+    the row is gone (already cleaned up elsewhere)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        cmd = await conn.execute(
+            """
+            UPDATE rag_documents
+            SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{status}', to_jsonb($2::text), true),
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            int(document_id),
+            str(status),
+        )
+    return cmd.split()[-1] == "1"
+
+
+async def multimodal_document_overview() -> list[dict[str, Any]]:
+    """Ingested multimodal documents for GET /documents/documents (id DESC).
+
+    Rows are read straight from rag_documents.metadata (written by
+    multimodal_ingest.ingest_one_pdf): filename lives in source_uri, title in
+    chapter_label, counts in pages/chunks. Placeholder rows mid-upload
+    (status=ingesting) or failed uploads (status=failed) are excluded; legacy
+    CLI-ingested rows have no status key and show as before (review P1-2).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, title, source_uri, metadata, created_at
+            FROM rag_documents
+            WHERE metadata->>'source' = 'multimodal_pdf'
+              AND COALESCE(metadata->>'status', 'completed') = 'completed'
+            ORDER BY id DESC
+            """
+        )
+    return [
+        {
+            "document_id": int(row["id"]),
+            "title": row["title"],
+            "source_uri": row["source_uri"],
+            "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"] or {}),
+            "created_at": row["created_at"].isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def build_document_list_item(row: dict[str, Any]) -> dict[str, Any]:
+    """Pure mapper overview-row → API item (unit-testable without PG, §8.5.2)."""
+    meta = row.get("metadata") or {}
+    filename = _source_filename(row.get("source_uri") or "")
+    chunks = meta.get("chunks") or {}
+    node_count = int(chunks.get("text") or 0) + int(chunks.get("image") or 0)
+    chapter_label = str(meta.get("chapter_label") or row.get("title") or filename)
+    return {
+        "document_id": int(row["document_id"]),
+        "filename": str(meta.get("filename") or filename),
+        "title": str(meta.get("chapter_label") or row.get("title") or filename),
+        "page_count": int(meta.get("pages") or 0),
+        "node_count": int(meta.get("node_count") or node_count),
+        "book_id": str(meta.get("book_id") or row["document_id"]),
+        "chapter_label": chapter_label,
+        "created_at": str(row.get("created_at") or ""),
+    }
 
 
 # ── rag_documents.metadata aggregation (filters facet + books expansion) ──

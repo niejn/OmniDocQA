@@ -1,33 +1,40 @@
 """FastAPI entrypoint for the rebuilt node-centric RAG API."""
 
-import asyncio
-import logging
+import asyncio  # noqa: E402  (imports stay after configure_runtime_logging by design)
+import json  # noqa: E402
+import logging  # noqa: E402
 
-from core.config import config
-from tools.runtime_logging import configure_runtime_logging
+from core.config import config  # noqa: E402
+from tools.runtime_logging import configure_runtime_logging  # noqa: E402
 
 configure_runtime_logging()
 
-from fastapi import APIRouter, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from tools.document_groups import default_document_groups_path, load_document_groups
-from tools.finance.financial_facts_repository import query_observations
-from tools.ingestion_service import process_document, reindex_document_vectors
-from tools.langfuse_tracing import tracer
-from tools.node_repository import (
+from fastapi import APIRouter, FastAPI, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+from tools.document_groups import (  # noqa: E402
+    default_document_groups_path,
+    load_document_groups,
+)
+from tools.finance.financial_facts_repository import query_observations  # noqa: E402
+from tools.ingestion_service import (  # noqa: E402
+    process_document,
+    reindex_document_vectors,
+)
+from tools.langfuse_tracing import tracer  # noqa: E402
+from tools.node_repository import (  # noqa: E402
     ensure_schema,
     list_available_document_ids,
     list_document_catalog,
 )
-from tools.report_store import (
+from tools.report_store import (  # noqa: E402
     delete_reports,
     get_report,
     list_reports,
     load_evidence_full_text_for_detail,
     save_ask_report,
 )
-from tools.rerank import reranker, warmup_reranker
+from tools.rerank import reranker, warmup_reranker  # noqa: E402
 
 logging.basicConfig(level=getattr(logging, config.log_level))
 logger = logging.getLogger(__name__)
@@ -61,16 +68,19 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-from tools.asks.ask_api import router as ask_router
+from tools.asks.ask_api import router as ask_router  # noqa: E402
 
 agent_router.include_router(ask_router)
 
-from tools.documents.document_api import router as documents_router
-from tools.documents.document_repository import ensure_sets_table
+from tools.documents.document_api import router as documents_router  # noqa: E402
+from tools.documents.document_repository import (  # noqa: E402
+    ensure_collections_table,
+    ensure_sets_table,
+)
 
 agent_router.include_router(documents_router)
 
-from tools.leads.leads_api import router as leads_router
+from tools.leads.leads_api import router as leads_router  # noqa: E402
 
 agent_router.include_router(leads_router)
 
@@ -80,6 +90,7 @@ async def startup_event():
     try:
         await ensure_schema()
         await ensure_sets_table()
+        await ensure_collections_table()
     except Exception as exc:
         logger.error(
             "PostgreSQL connection failed (host=%s port=%s db=%s). "
