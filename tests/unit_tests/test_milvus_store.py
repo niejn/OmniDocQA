@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 from core.config import config
 from loguru import logger
+from pymilvus import RRFRanker
 from tools import milvus_store
 from tools.retrieval_backends import factory
 from tools.retrieval_backends.dense_milvus import MilvusDenseBackend
@@ -50,6 +51,8 @@ class FakeClient:
         self.deleted_filters: list[str] = []
         self.search_calls: list[dict] = []
         self.search_result: list = []
+        self.hybrid_calls: list[dict] = []
+        self.hybrid_result: list = []
         self.upserted: list[dict] = []
         self.query_calls: list[dict] = []
         self.query_rows: list[dict] = []
@@ -89,6 +92,18 @@ class FakeClient:
     def search(self, **kwargs: object) -> list:
         self.search_calls.append(kwargs)
         return self.search_result
+
+    def hybrid_search(self, *, collection_name: str, reqs: list, ranker: object, limit: int, output_fields: list) -> list:
+        self.hybrid_calls.append(
+            {
+                "collection_name": collection_name,
+                "reqs": reqs,
+                "ranker": ranker,
+                "limit": limit,
+                "output_fields": list(output_fields or []),
+            }
+        )
+        return self.hybrid_result
 
 
 @pytest.fixture()
@@ -426,6 +441,126 @@ def test_factory_sparse_selects_milvus_by_default(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(ValueError, match="opensearch was removed at M5-prime"):
         factory.get_sparse_backend()
     factory.get_sparse_backend.cache_clear()
+
+
+# ---------- hybrid_search (1C server-side RRF fusion sink) ----------
+
+
+def test_hybrid_search_requires_vector_text_and_filter(fake_client: FakeClient) -> None:
+    assert (
+        milvus_store.hybrid_search(
+            [0.1, 0.2], "net sales", limit=5, filter_expr="", log_stage="unit"
+        )
+        == []
+    )
+    assert milvus_store.hybrid_search([], "net sales", limit=5, filter_expr="document_id in [9]") == []
+    assert milvus_store.hybrid_search([0.1], "  ", limit=5, filter_expr="document_id in [9]") == []
+    assert fake_client.hybrid_calls == []
+
+
+def test_hybrid_search_sends_dense_and_sparse_requests_with_rrf_ranker(
+    fake_client: FakeClient,
+) -> None:
+    fake_client.hybrid_result = [[]]
+    milvus_store.hybrid_search(
+        [0.1, 0.2],
+        "  net sales iPhone  ",
+        limit=7,
+        filter_expr='document_id in [9] and level in [0]',
+        log_stage="unit_hybrid",
+    )
+    assert len(fake_client.hybrid_calls) == 1
+    call = fake_client.hybrid_calls[0]
+    assert call["collection_name"] == "test_rag_nodes"
+    assert call["limit"] == 7
+    assert set(call["output_fields"]) >= {"text", "metadata", "retrieval_fields"}
+    reqs = call["reqs"]
+    assert len(reqs) == 2
+    dense_req, sparse_req = reqs
+    assert dense_req.anns_field == "dense"
+    assert dense_req.data == [[0.1, 0.2]]
+    assert dense_req.param == {"metric_type": "COSINE"}
+    assert dense_req.limit == 7
+    assert sparse_req.anns_field == "sparse"
+    assert sparse_req.data == ["net sales iPhone"]  # trimmed raw text, analyzed server-side
+    assert sparse_req.param == {"metric_type": "BM25"}
+    # Same filter expression pushed into both requests (MilvusClient.hybrid_search
+    # has no top-level filter; per-request expr is the documented filter slot).
+    assert dense_req.filter == sparse_req.filter == "document_id in [9] and level in [0]"
+    # Default ranker: RRFRanker(k=60) — the constant pinned by the app-layer RRF.
+    assert call["ranker"].dict() == {"strategy": "rrf", "params": {"k": 60}}
+
+
+def test_hybrid_search_maps_hits_to_node_shape(fake_client: FakeClient) -> None:
+    fake_client.hybrid_result = [
+        [
+            {
+                "id": "uuid-h1",
+                "distance": 0.032,
+                "entity": {
+                    "document_id": 9,
+                    "parent_id": "p-1",
+                    "node_type": "chunk",
+                    "level": 0,
+                    "order_index": 3,
+                    "title": "Business",
+                    "metadata": {milvus_store._TEXT_PREFIX_META_KEY: 17},
+                    "retrieval_fields": {"domain": ["finance"]},
+                    "text": "TITTLEPREFIX12345" + "y" * 1_500,
+                },
+            }
+        ]
+    ]
+    results = milvus_store.hybrid_search(
+        [0.1, 0.2],
+        "net sales",
+        limit=5,
+        filter_expr="document_id in [9]",
+    )
+    assert len(results) == 1
+    hit = results[0]
+    assert hit["node_id"] == "uuid-h1"
+    assert hit["fusion_score"] == 0.032  # RRF score; dense/sparse sub-scores absent
+    assert "dense_score" not in hit and "sparse_score" not in hit
+    assert hit["document_id"] == 9
+    assert hit["domain"] == ["finance"]  # retrieval fields flattened
+    assert hit["text"] == "y" * 1_500  # enrichment prefix stripped
+    assert len(hit["text_preview"]) == 1_000
+
+
+def test_hybrid_search_custom_ranker_and_k(fake_client: FakeClient) -> None:
+    fake_client.hybrid_result = [[]]
+    custom = RRFRanker(k=13)
+    milvus_store.hybrid_search(
+        [0.1], "q", limit=3, filter_expr="document_id in [1]", ranker=custom, k=7
+    )
+    assert fake_client.hybrid_calls[0]["ranker"] is custom
+    milvus_store.hybrid_search([0.1], "q", limit=3, filter_expr="document_id in [1]", k=7)
+    assert fake_client.hybrid_calls[1]["ranker"].dict() == {"strategy": "rrf", "params": {"k": 7}}
+
+
+def test_hybrid_search_per_request_depth_defaults_and_overrides(
+    fake_client: FakeClient,
+) -> None:
+    fake_client.hybrid_result = [[]]
+    # Default: per-request depth = final limit.
+    milvus_store.hybrid_search([0.1], "q", limit=5, filter_expr="document_id in [1]")
+    call = fake_client.hybrid_calls[0]
+    assert all(req.limit == 5 for req in call["reqs"])
+    # Sink-path parity override: app path fuses over dense_top_k + sparse_top_k
+    # candidates, so the server-side pool must match those depths.
+    milvus_store.hybrid_search(
+        [0.1],
+        "q",
+        limit=5,
+        filter_expr="document_id in [1]",
+        dense_limit=30,
+        sparse_limit=20,
+    )
+    dense_req, sparse_req = fake_client.hybrid_calls[1]["reqs"]
+    assert dense_req.limit == 30
+    assert sparse_req.limit == 20
+    assert fake_client.hybrid_calls[1]["limit"] == 5
 
 
 # ---------- BM25 text enrichment (title/search_hints prefix) ----------

@@ -2,35 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-from datetime import datetime, timezone
-from difflib import SequenceMatcher
-from pathlib import Path
 import uuid
 from collections import Counter, defaultdict
-from typing import Any, Optional
+from datetime import UTC, datetime
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Any, TypeVar
 
-from llama_index.core.callbacks import CBEventType, CallbackManager
+from core.config import config
+from llama_index.core.callbacks import CallbackManager, CBEventType
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 from loguru import logger
 
-from core.config import config
-from .rerank import reranker
+from .finance.query_scope_resolver import resolve_query_scope
 from .llamaindex_callbacks import RecordingCallbackHandler
 from .narrative_multi_rerank import narrative_rerank_subqueries, run_multi_query_rerank
-from .narrative_section_policy import resolve_section_policy, NarrativeSectionPolicy
-from .finance.query_scope_resolver import resolve_query_scope
+from .narrative_section_policy import NarrativeSectionPolicy, resolve_section_policy
 from .node_repository import (
     fetch_children,
     fetch_leaf_descendants,
-    fetch_neighbors,
     fetch_nodes,
     fetch_siblings,
     resolve_scoped_document_ids,
 )
 from .rag_stage_log import log_rag
+from .rerank import reranker
+from .retrieval_backends.factory import get_dense_backend, get_sparse_backend
+from .retrieval_backends.sparse_query_profiles import build_sparse_query_plan
 from .retrieval_fields import (
     RETRIEVAL_INDEX_KEYWORD_FIELDS,
     RETRIEVAL_INDEX_TEXT_FIELDS,
@@ -38,10 +40,7 @@ from .retrieval_fields import (
     infer_finance_section_role,
     infer_finance_topic_tags,
 )
-from .retrieval_backends.sparse_query_profiles import build_sparse_query_plan
-from .retrieval_backends.factory import get_dense_backend, get_sparse_backend
 from .vectorizer import generate_embedding
-
 
 _NARROWING_META_KEYS: tuple[str, ...] = (
     "sec_accession",
@@ -160,11 +159,11 @@ def _dump_pre_rerank_debug(
     try:
         debug_dir = Path(__file__).resolve().parents[1] / "debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         suffix = uuid.uuid4().hex[:8]
         out_path = debug_dir / f"pre_rerank_pool_{stamp}_{suffix}.json"
         payload = {
-            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "created_at_utc": datetime.now(UTC).isoformat(),
             "need_narrative": bool(need_narrative),
             "query": query,
             "metadata_filters": dict(metadata_filters or {}),
@@ -787,11 +786,15 @@ def _apply_answerability_scores(
         if features["answerability_pass"]:
             passed += 1
         annotated.append(enriched)
+    # fusion_score fallback aligns with _evidence_score's convention: when the
+    # dense/sparse sub-scores are absent (e.g. section-tree fallback candidates
+    # that only carry a fusion score) the sort must not flatten them to 0.0
+    # (review P2-10).
     annotated.sort(
         key=lambda item: (
             float(item.get("rerank_score") or 0.0),
-            float(item.get("dense_score") or 0.0),
-            float(item.get("sparse_score") or 0.0),
+            float(item.get("dense_score") or item.get("fusion_score") or 0.0),
+            float(item.get("sparse_score") or item.get("fusion_score") or 0.0),
         ),
         reverse=True,
     )
@@ -1201,22 +1204,65 @@ def _to_text_node(node: dict[str, Any]) -> TextNode:
     )
 
 
+# Application-level RRF smoothing constant, shared by rrf_scores/rrf_fuse/
+# reciprocal_rank_fusion and by the Milvus sink path (RRFRanker(k=60)). Fixed,
+# independent of any backend's BM25 k1/b or HNSW hnsw_ef tuning knobs.
+RRF_K = 60
+
+_K = TypeVar("_K")
+
+
+def rrf_scores(ranked_lists: list[list[_K]], k: int = RRF_K) -> dict[_K, float]:
+    """Pure RRF score accumulation (Milvus RRFRanker formula).
+
+    ``score(key) = Σ_over_lists 1 / (k + rank)`` with ``rank`` starting at 1
+    within each list (pymilvus RRFRanker / Milvus docs semantics, k=60 here).
+    Keys missing from a list simply contribute nothing from that list.
+    """
+    scores: dict[_K, float] = defaultdict(float)
+    for ranked in ranked_lists:
+        for index, key in enumerate(ranked):
+            scores[key] += 1.0 / (k + index + 1)
+    return scores
+
+
+def rrf_fuse(ranked_lists: list[list[_K]], k: int = RRF_K) -> list[_K]:
+    """Fuse ranked keys into one ordering by descending RRF score.
+
+    Pure function over hashable keys (node ids in practice). Ties (identical
+    fused scores) keep first-appearance order across the ranked lists — the
+    same stable convention the item-level wrapper relies on when its own
+    ``(score, level)`` sort keys tie. Unit-tested for ordering consistency
+    against the Milvus RRFRanker formula (tests/test_rrf_fusion.py).
+    """
+    scores = rrf_scores(ranked_lists, k=k)
+    first_seen: dict[_K, int] = {}
+
+    def _visit(ranked: list[_K]) -> None:
+        for key in ranked:
+            if key not in first_seen:
+                first_seen[key] = len(first_seen)
+
+    for ranked in ranked_lists:
+        _visit(ranked)
+    return sorted(scores, key=lambda key: (-scores[key], first_seen[key]))
+
+
 def reciprocal_rank_fusion(
     ranked_lists: list[list[dict[str, Any]]],
     *,
     limit: int,
     score_keys: list[str],
 ) -> list[dict[str, Any]]:
-    # Application-level RRF; this is not Milvus RRFRanker. The smoothing
-    # constant is currently fixed at 60, so it is independent of OpenSearch
-    # BM25 k1/b and Qdrant HNSW hnsw_ef.
-    scores: dict[str, float] = defaultdict(float)
+    # Application-level RRF; this is not Milvus RRFRanker (but rrf_scores above
+    # implements the same Σ 1/(k+rank) formula, k=60 — see the 1C sink tests).
+    node_lists = [[item["node_id"] for item in ranked] for ranked in ranked_lists]
+    scores = rrf_scores(node_lists)
     merged: dict[str, dict[str, Any]] = {}
     for ranked in ranked_lists:
-        for index, item in enumerate(ranked):
+        for item in ranked:
             node_id = item["node_id"]
             merged.setdefault(node_id, dict(item))
-            scores[node_id] += 1.0 / (60 + index + 1)
             for score_key in score_keys:
                 if score_key in item:
                     merged[node_id][score_key] = item[score_key]
@@ -1363,13 +1409,18 @@ def _scoped_leaf_fused_debug(
     }
 
 
+def _fusion_backend_is_milvus() -> bool:
+    """FUSION_BACKEND=milvus → server-side RRF fusion; anything else → app path."""
+    return (config.fusion_backend or "app").strip().lower() == "milvus"
+
+
 class NodeHybridRetriever(BaseRetriever):
     def __init__(
         self,
         *,
         document_ids: list[int],
-        metadata_filters: Optional[dict[str, list[str]]] = None,
-        retrieval_soft_hints: Optional[dict[str, list[str]]] = None,
+        metadata_filters: dict[str, list[str]] | None = None,
+        retrieval_soft_hints: dict[str, list[str]] | None = None,
         evidence_plan: Any = None,
         callback_handler: RecordingCallbackHandler,
     ) -> None:
@@ -1386,6 +1437,133 @@ class NodeHybridRetriever(BaseRetriever):
 
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
         raise NotImplementedError("Use aretrieve() for async retrieval.")
+
+    async def _milvus_hybrid_fuse(
+        self,
+        query_embedding: list[float],
+        query: str,
+        *,
+        levels: list[int],
+        metadata_filters: dict[str, list[str]],
+        limit: int,
+        stage: str,
+    ) -> list[dict[str, Any]] | None:
+        """Server-side fused candidates for one branch, or None → app fusion.
+
+        Valid only when dense+sparse are the Milvus pair sharing the
+        ``rag_nodes`` rows (both fields keyed by the same node UUID). Any
+        backend error degrades to None with a warning — this path must never
+        take a request down (default FUSION_BACKEND=app never calls it).
+        """
+        from .milvus_store import build_filter_expr, hybrid_search
+        from .retrieval_backends.dense_milvus import MilvusDenseBackend
+        from .retrieval_backends.sparse_milvus import MilvusSparseBackend
+
+        if not isinstance(self.dense_backend, MilvusDenseBackend) or not isinstance(
+            self.sparse_backend, MilvusSparseBackend
+        ):
+            log_rag("hybrid_milvus_skip", reason="backend_pair_not_milvus", branch=stage)
+            return None
+        expr = build_filter_expr(
+            self.document_ids,
+            levels=levels,
+            metadata_filters=metadata_filters,
+        )
+        if not expr:
+            return None
+        try:
+            return await asyncio.to_thread(
+                hybrid_search,
+                query_embedding,
+                query,
+                limit=limit,
+                filter_expr=expr,
+                # Fusion-pool parity: the app path fuses over dense_top_k +
+                # sparse_top_k candidates per side; the server-side pool must
+                # match or rankings shift even with identical RRF math.
+                dense_limit=config.dense_top_k,
+                sparse_limit=config.sparse_top_k,
+                log_stage=f"hybrid_milvus_{stage}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[retrieval] milvus hybrid_search failed (stage={}); falling back to app fusion: {}",
+                stage,
+                exc,
+            )
+            return None
+
+    async def _dense_sparse_fused(
+        self,
+        *,
+        query: str,
+        query_embedding: list[float] | None,
+        levels: list[int],
+        metadata_filters: dict[str, list[str]],
+        fusion_limit: int,
+        stage: str,
+        candidate_source: str,
+        query_plan: Any = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """Dense + sparse retrieval + RRF fusion for one branch (FUSION_BACKEND seam).
+
+        ``app`` (default): two backend searches fused by application-level
+        ``reciprocal_rank_fusion`` (k=60) — the long-standing behaviour.
+        ``milvus`` and a Milvus backend pair: fusion is sunk into one
+        server-side ``hybrid_search`` (RRFRanker k=60, see
+        tests/unit_tests/test_rrf_fusion.py for the ordering-consistency
+        contract); dense/sparse stay empty because Milvus reports no
+        per-request sub-scores.
+
+        Returns ``(dense_hits, sparse_hits, fused, server_fused)``; fused
+        items carry ``candidate_source``.
+        """
+        if _fusion_backend_is_milvus() and query_embedding:
+            milvus_fused = await self._milvus_hybrid_fuse(
+                query_embedding,
+                query,
+                levels=levels,
+                metadata_filters=metadata_filters,
+                limit=fusion_limit,
+                stage=stage,
+            )
+            if milvus_fused is not None:
+                return (
+                    [],
+                    [],
+                    [{**item, "candidate_source": candidate_source} for item in milvus_fused],
+                    True,
+                )
+        dense = (
+            self.dense_backend.search(
+                query_embedding,
+                document_ids=self.document_ids,
+                levels=levels,
+                limit=config.dense_top_k,
+                metadata_filters=metadata_filters,
+                log_stage=f"dense_{stage}",
+            )
+            if query_embedding
+            else []
+        )
+        sparse = await self.sparse_backend.search(
+            self.document_ids,
+            query,
+            levels=levels,
+            limit=config.sparse_top_k,
+            metadata_filters=metadata_filters,
+            query_plan=query_plan,
+            log_stage=f"sparse_{stage}",
+        )
+        fused = [
+            {**item, "candidate_source": candidate_source}
+            for item in reciprocal_rank_fusion(
+                [dense, sparse],
+                limit=fusion_limit,
+                score_keys=["dense_score", "sparse_score"],
+            )
+        ]
+        return dense, sparse, fused, False
 
     async def _aretrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
         query = query_bundle.query_str.strip()
@@ -1423,10 +1601,10 @@ class NodeHybridRetriever(BaseRetriever):
             query_event.on_start(payload={"query": query, "document_ids": self.document_ids})
         # ── 本混合检索实现(retrieve)内部检索顺序 ──────────────────────────────
         #   0. query 向量化: generate_embedding(query)  (OpenRouter, 2048 维)
-        #   1. 稠密检索(dense):  self.dense_backend.search(...)  → Qdrant 向量库
-        #   2. 稀疏检索(sparse): self.sparse_backend.search(...) → Postgres/OpenSearch 全文
+        #   1. 稠密检索(dense):  self.dense_backend.search(...)  → Milvus 向量库
+        #   2. 稀疏检索(sparse): self.sparse_backend.search(...) → Milvus/Postgres 全文
         #   3. 融合(fusion):     reciprocal_rank_fusion([dense, sparse]) → pre_rerank 候选池
-#   4. 重排(rerank):     reranker.rerank(...)  (rerank.py: 本地 CrossEncoder, 默认; RERANKER_BACKEND=none 可关闭)
+        #   4. 重排(rerank):     reranker.rerank(...)  (rerank.py: 本地 CrossEncoder, 默认; RERANKER_BACKEND=none 可关闭)
         #   之后: post_rerank_selector → final_ranked → 兄弟节点扩展 → 返回 nodes。
         #   注意: 稠密=向量、稀疏=关键词全文, 二者在 retrieve 内融合; SQL 财务事实不在此处。
             if query_embedding is None:
@@ -1453,45 +1631,26 @@ class NodeHybridRetriever(BaseRetriever):
                 if need_narrative
                 else [1, 2]
             )
-            summary_dense = (
-                # 步骤1: 稠密检索(dense) → Qdrant 向量库
-                self.dense_backend.search(
-                    query_embedding,
-                    document_ids=self.document_ids,
+            summary_dense, summary_sparse, summary_fused_raw, summary_server_fused = (
+                await self._dense_sparse_fused(
+                    query=query,
+                    query_embedding=query_embedding,
                     levels=summary_levels,
-                    limit=config.dense_top_k,
                     metadata_filters=summary_filters,
-                    log_stage="dense_summary",
+                    fusion_limit=max(summary_limit, config.retrieve_top_k // 2),
+                    stage="summary",
+                    candidate_source="summary",
+                    query_plan=sparse_query_plan,
                 )
-                if query_embedding
-                else []
             )
-                # 步骤2: 稀疏检索(sparse) → Postgres/OpenSearch 全文
-            summary_sparse = await self.sparse_backend.search(
-                self.document_ids,
-                query,
-                levels=summary_levels,
-                limit=config.sparse_top_k,
-                metadata_filters=summary_filters,
-                query_plan=sparse_query_plan,
-                log_stage="sparse_summary",
-            )
-            summary_fused = [
-                {**item, "candidate_source": "summary"}
-                for item in reciprocal_rank_fusion(
-                [summary_dense, summary_sparse],
-                limit=max(summary_limit, config.retrieve_top_k // 2),
-                score_keys=["dense_score", "sparse_score"],
-            )
-            ]
             summary_fused = _apply_filing_aware_limit(
-                summary_fused,
+                summary_fused_raw,
                 limit=summary_limit,
                 per_filing_cap=per_filing_cap,
             )
             _log_fusion(
                 "fusion_summary",
-                [summary_dense, summary_sparse],
+                [summary_fused] if summary_server_fused else [summary_dense, summary_sparse],
                 summary_limit,
                 summary_fused,
             )
@@ -1515,39 +1674,30 @@ class NodeHybridRetriever(BaseRetriever):
                 use_filing_scoped = bool(filing_scoped_accns) and bool(query_embedding)
                 if use_filing_scoped:
                     scoped_filters = {**leaf_base_filters, "finance_accns": filing_scoped_accns}
-                    filing_scoped_leaf_dense = self.dense_backend.search(
-                        query_embedding,
-                        document_ids=self.document_ids,
+                    (
+                        filing_scoped_leaf_dense,
+                        filing_scoped_leaf_sparse,
+                        leaf_fused_raw,
+                        leaf_server_fused,
+                    ) = await self._dense_sparse_fused(
+                        query=query,
+                        query_embedding=query_embedding,
                         levels=[0],
-                        limit=config.dense_top_k,
                         metadata_filters=scoped_filters,
-                        log_stage="dense_leaf_filing_scoped",
-                    )
-                    filing_scoped_leaf_sparse = await self.sparse_backend.search(
-                        self.document_ids,
-                        query,
-                        levels=[0],
-                        limit=config.sparse_top_k,
-                        metadata_filters=scoped_filters,
+                        fusion_limit=max(leaf_limit, config.retrieve_candidate_k),
+                        stage="leaf_filing_scoped",
+                        candidate_source="filing_scoped_leaf",
                         query_plan=sparse_query_plan,
-                        log_stage="sparse_leaf_filing_scoped",
                     )
-                    leaf_fused = [
-                        {**item, "candidate_source": "filing_scoped_leaf"}
-                        for item in reciprocal_rank_fusion(
-                            [filing_scoped_leaf_dense, filing_scoped_leaf_sparse],
-                            limit=max(leaf_limit, config.retrieve_candidate_k),
-                            score_keys=["dense_score", "sparse_score"],
-                        )
-                    ]
                     leaf_fused = _apply_filing_aware_limit(
-                        leaf_fused,
+                        leaf_fused_raw,
                         limit=leaf_limit,
                         per_filing_cap=max(per_filing_cap, 8),
                     )
                     _log_fusion(
                         "fusion_leaf_filing_scoped",
-                        [filing_scoped_leaf_dense, filing_scoped_leaf_sparse],
+                        [leaf_fused] if leaf_server_fused
+                        else [filing_scoped_leaf_dense, filing_scoped_leaf_sparse],
                         leaf_limit,
                         leaf_fused,
                     )
@@ -1590,78 +1740,53 @@ class NodeHybridRetriever(BaseRetriever):
                         leaf_base_filters,
                         strip_finance_accns=strip_accns,
                     )
-                    leaf_dense = self.dense_backend.search(
-                        query_embedding,
-                        document_ids=self.document_ids,
-                        levels=[0],
-                        limit=config.dense_top_k,
-                        metadata_filters=leaf_mf,
-                        log_stage="dense_leaf_narrative",
-                    )
-                    leaf_sparse = await self.sparse_backend.search(
-                        self.document_ids,
-                        query,
-                        levels=[0],
-                        limit=config.sparse_top_k,
-                        metadata_filters=leaf_mf,
-                        query_plan=sparse_query_plan,
-                        log_stage="sparse_leaf_narrative",
-                    )
-                    leaf_fused = [
-                        {**item, "candidate_source": "leaf"}
-                        for item in reciprocal_rank_fusion(
-                            [leaf_dense, leaf_sparse],
-                            limit=max(leaf_limit, config.retrieve_candidate_k),
-                            score_keys=["dense_score", "sparse_score"],
+                    leaf_dense, leaf_sparse, leaf_fused_raw, leaf_server_fused = (
+                        await self._dense_sparse_fused(
+                            query=query,
+                            query_embedding=query_embedding,
+                            levels=[0],
+                            metadata_filters=leaf_mf,
+                            fusion_limit=max(leaf_limit, config.retrieve_candidate_k),
+                            stage="leaf_narrative",
+                            candidate_source="leaf",
+                            query_plan=sparse_query_plan,
                         )
-                    ]
+                    )
                     leaf_fused = _apply_filing_aware_limit(
-                        leaf_fused,
+                        leaf_fused_raw,
                         limit=leaf_limit,
                         per_filing_cap=per_filing_cap,
                     )
                     _log_fusion(
                         "fusion_leaf_narrative_unscoped",
-                        [leaf_dense, leaf_sparse],
+                        [leaf_fused] if leaf_server_fused else [leaf_dense, leaf_sparse],
                         leaf_limit,
                         leaf_fused,
                     )
             else:
-                leaf_dense = (
-                    self.dense_backend.search(
-                        query_embedding,
-                        document_ids=self.document_ids,
+                leaf_dense, leaf_sparse, leaf_fused_raw, leaf_server_fused = (
+                    await self._dense_sparse_fused(
+                        query=query,
+                        query_embedding=query_embedding,
                         levels=[0],
-                        limit=config.dense_top_k,
                         metadata_filters=self.metadata_filters,
-                        log_stage="dense_leaf",
+                        fusion_limit=max(leaf_limit, config.retrieve_candidate_k),
+                        stage="leaf",
+                        candidate_source="leaf",
+                        query_plan=sparse_query_plan,
                     )
-                    if query_embedding
-                    else []
                 )
-                leaf_sparse = await self.sparse_backend.search(
-                    self.document_ids,
-                    query,
-                    levels=[0],
-                    limit=config.sparse_top_k,
-                    metadata_filters=self.metadata_filters,
-                    query_plan=sparse_query_plan,
-                    log_stage="sparse_leaf",
-                )
-                leaf_fused = [
-                    {**item, "candidate_source": "leaf"}
-                    for item in reciprocal_rank_fusion(
-                        [leaf_dense, leaf_sparse],
-                        limit=max(leaf_limit, config.retrieve_candidate_k),
-                        score_keys=["dense_score", "sparse_score"],
-                    )
-                ]
                 leaf_fused = _apply_filing_aware_limit(
-                    leaf_fused,
+                    leaf_fused_raw,
                     limit=leaf_limit,
                     per_filing_cap=per_filing_cap,
                 )
-                _log_fusion("fusion_leaf", [leaf_dense, leaf_sparse], leaf_limit, leaf_fused)
+                _log_fusion(
+                    "fusion_leaf",
+                    [leaf_fused] if leaf_server_fused else [leaf_dense, leaf_sparse],
+                    leaf_limit,
+                    leaf_fused,
+                )
             retrieve_event.on_end(
                 payload={
                     "summary_dense": len(summary_dense),
@@ -2116,8 +2241,8 @@ class LlamaIndexRetrievalService:
         *,
         query: str,
         document_ids: list[int],
-        metadata_filters: Optional[dict[str, list[str]]] = None,
-        retrieval_soft_hints: Optional[dict[str, list[str]]] = None,
+        metadata_filters: dict[str, list[str]] | None = None,
+        retrieval_soft_hints: dict[str, list[str]] | None = None,
         evidence_plan: Any = None,
     ) -> dict[str, Any]:
         effective_ids = document_ids

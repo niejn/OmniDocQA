@@ -481,6 +481,124 @@ def sparse_search(
     return results
 
 
+def hybrid_search(
+    dense_query_vec: list[float],
+    sparse_text: str,
+    *,
+    limit: int,
+    filter_expr: str,
+    ranker: Any | None = None,
+    k: int = 60,
+    dense_limit: int | None = None,
+    sparse_limit: int | None = None,
+    log_stage: str | None = None,
+) -> list[dict[str, Any]]:
+    """Server-side RRF fusion over the dense + sparse fields (1C sink path).
+
+    One ``MilvusClient.hybrid_search`` round-trip: an ``AnnSearchRequest`` per
+    field (dense COSINE over the query vector, BM25 over the raw query text —
+    both carrying the same filter expression) fused server-side by
+    ``RRFRanker(k)`` (default 60, the same constant as the application-level
+    ``rrf_scores``; ordering consistency is unit-tested in
+    tests/unit_tests/test_rrf_fusion.py).
+
+    ``dense_limit``/``sparse_limit`` set the per-request candidate depth
+    BEFORE server-side fusion; they default to ``limit``. Parity note: the
+    application-level path fuses over ``dense_top_k`` + ``sparse_top_k``
+    candidates, so callers sinking fusion should pass those here — a smaller
+    per-request depth shrinks the fusion pool and reorders results even
+    though the RRF math is identical.
+
+    Hit contract mirrors ``dense_search``/``sparse_search``: ``node_id`` +
+    payload fields + ``text_preview``, with the RRF score under
+    ``fusion_score``. Per-request sub-scores (dense/sparse) are not returned
+    by Milvus hybrid_search, so those keys are absent — downstream consumers
+    read them via ``.get()`` and fall back to ``fusion_score``.
+    """
+    normalized = (sparse_text or "").strip()
+    if not dense_query_vec or not normalized or not filter_expr:
+        if log_stage:
+            log_rag(
+                log_stage,
+                returned=0,
+                reason="no_vector_or_text_or_filter",
+                limit=limit,
+            )
+        return []
+    ensure_collection(len(dense_query_vec))
+    dense_depth = max(int(dense_limit or limit), 1)
+    sparse_depth = max(int(sparse_limit or limit), 1)
+    if ranker is None:
+        from pymilvus import RRFRanker
+
+        ranker = RRFRanker(k=k)
+
+    from pymilvus import AnnSearchRequest
+
+    reqs = [
+        AnnSearchRequest(
+            data=[dense_query_vec],
+            anns_field="dense",
+            param={"metric_type": "COSINE"},
+            limit=dense_depth,
+            filter=filter_expr,
+        ),
+        AnnSearchRequest(
+            data=[normalized],
+            anns_field="sparse",
+            param={"metric_type": "BM25"},
+            limit=sparse_depth,
+            filter=filter_expr,
+        ),
+    ]
+    t0 = time.perf_counter()
+    response = get_client().hybrid_search(
+        collection_name=config.milvus_collection,
+        reqs=reqs,
+        ranker=ranker,
+        limit=limit,
+        output_fields=_OUTPUT_FIELDS,
+    )
+    hits = response[0] if response else []
+    results: list[dict[str, Any]] = []
+    for hit in hits:
+        entity = dict(hit["entity"] or {})
+        text = _strip_text_prefix(str(entity.get("text") or ""), entity.get("metadata"))
+        retrieval_fields = entity.get("retrieval_fields") or {}
+        results.append(
+            {
+                "node_id": str(hit["id"]),
+                "fusion_score": float(hit["distance"]),
+                "document_id": entity.get("document_id"),
+                "parent_id": entity.get("parent_id"),
+                "node_type": entity.get("node_type"),
+                "level": entity.get("level"),
+                "order_index": entity.get("order_index"),
+                "title": entity.get("title"),
+                "text": text,
+                "text_preview": text[:1000],
+                "metadata": entity.get("metadata") or {},
+                **{str(kk): vv for kk, vv in dict(retrieval_fields).items()},
+            }
+        )
+    if log_stage:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        top_scores = [round(float(r["fusion_score"]), 6) for r in results[:3]]
+        log_rag(
+            log_stage,
+            returned=len(results),
+            limit=limit,
+            dense_limit=dense_depth,
+            sparse_limit=sparse_depth,
+            k=k,
+            ranker=type(ranker).__name__,
+            filter_chars=len(filter_expr),
+            top_fusion_scores=top_scores or None,
+            latency_ms=elapsed_ms,
+        )
+    return results
+
+
 def rebuild_texts(
     *,
     document_ids: list[int] | None = None,
