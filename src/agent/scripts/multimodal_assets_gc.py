@@ -42,6 +42,9 @@ if str(AGENT_ROOT) not in sys.path:
 
 from core.config import config  # noqa: E402
 from loguru import logger  # noqa: E402
+from tools.milvus_store import (  # noqa: E402
+    MILVUS_MAX_QUERY_WINDOW as _MILVUS_QUERY_LIMIT,
+)
 from tools.milvus_store import get_client  # noqa: E402
 
 # Non-asset metadata files that live inside the asset dir but are never
@@ -51,10 +54,6 @@ _KEEP_FILES = {"ingest_report.json"}
 # hits), not image_ref-addressed: legitimate while the document still has
 # points, orphans only when the whole document is gone.
 _PAGE_FILE = re.compile(r"^page_\d+\.jpg$")
-
-# Milvus query cap — must match the backend's own query limits; going beyond
-# needs the truncation check below, not a bigger blind limit.
-_MILVUS_QUERY_LIMIT = 16384
 
 
 class Reconciliation(NamedTuple):

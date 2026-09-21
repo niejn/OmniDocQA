@@ -334,21 +334,17 @@ async def generate_evalset_core(
     ``collection`` routes the sampling query (None = config default);
     ``progress`` is an optional callable receiving the CLI progress lines.
     Raises ValueError for client-rejectable problems (no chunks / unknown
-    collection — the latter surfaces as SystemExit inside load_chunks and is
-    normalized here). The returned payload matches the CLI draft JSON exactly.
+    collection). The returned payload matches the CLI draft JSON exactly.
     """
     say = progress or (lambda _msg: None)
 
     say("[1/3] loading chunks from Milvus ...")
-    try:
-        # Sync Milvus pull of up to 16384 rows → worker thread: this core runs
-        # as a background API job, and the call must not block the event loop
-        # (review P1-1).
-        chunks = await asyncio.to_thread(
-            load_chunks, limit_per_book=max_chunks_per_book, collection=collection
-        )
-    except SystemExit as exc:  # load_chunks signals unknown collection via SystemExit
-        raise ValueError(str(exc)) from None
+    # Sync Milvus pull of up to 16384 rows → worker thread: this core runs
+    # as a background API job, and the call must not block the event loop
+    # (review P1-1).
+    chunks = await asyncio.to_thread(
+        load_chunks, limit_per_book=max_chunks_per_book, collection=collection
+    )
     if not chunks:
         raise ValueError("no chunks found; run ingest_multimodal_pdf.py first")
     books = sorted({c["book_id"] for c in chunks})

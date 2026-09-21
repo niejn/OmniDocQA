@@ -252,3 +252,18 @@ Milvus 原生"重排"只有 `hybrid_search` 的 **RRFRanker/WeightedRanker**—�
 | jobs 持久化 | — | 进程内 dict，重启丢失（v1 声明） |
 | R5/R6/R7 | R2/R3 实战数据 | 选型排行榜/组件 A/B/持续回归 |
 | dots.ocr vLLM 部署决策 | — | 详设 §12；bbox 裁剪偏移真机验证同批做 |
+
+## 2026-09-21 Code-smell 清理 + 阿里云部署（8.155.130.113）
+
+**部署拓扑（Ubuntu 26.04 · 4C/7.3G · 无 GPU）**：docker compose 起 postgres/etcd/milvus/rag-minio（rag-minio 用 DDN 源 07-23 官方 tag 覆盖，见 docker-compose.override.yml）；后端 uvicorn :8001 + 前端 next :3000 双 systemd 常驻（`omnidocqa-backend` / `omnidocqa-frontend`）；代码在 /opt/omnidocqa（Python 3.12 uv venv，剔除 torch/sentence-transformers，`RERANKER_BACKEND=none`）。**注意：服务器 8000/8080 已被其他应用占用**。服务器网络：ark/github/npm 可达，openrouter/openai 被墙，zhipu embedding 无余额 → embedding 只能走 ark；配额 09-23 重置前多模态入库/评测出图阻塞。
+
+**部署期发现并修复（commit 7389443 + 本次收尾）**：
+1. `opencc-python-reimplemented` 缺失于 requirements.txt——fresh 安装后端起不来（本地装过测不出）。
+2. 上传必崩：`rag_documents.metadata` jsonb 被 asyncpg 读成 str，而占位行修复后守卫必然 SELECT 到该行再 `.get()`——本地冒烟时占位行不存在才侥幸通过。已防御式解析（document_repository 旧先例）。
+3. 伪造/损坏 .pdf 返回 502 → 改 422（`UploadRejectedError` 包装 fitz 打开失败）。
+4. **next.config rewrites 的 destination 在 build 期固化**（start 不重求值）——首次部署没带 `BACKEND_API_BASE_URL` 构建，:3000 页图全 404。已在 next.config/backendProxy 注释中写明部署要求；环境变量与代理路由的运行时读取是两码事。
+5. `.gitignore` 上古规则 `lib/`（Python 打包样板、无根锚定）把 `src/frontend/src/lib/` 整个吞了——**GitHub 上的仓库此前 clone 不下来编译不过**（tsc 本地过是因为文件在磁盘上）。已改 `/lib/` 并补提交 5 个文件（a0b998a）；`tsconfig.tsbuildinfo` 同理停止跟踪。
+
+**E2E 实测（配额阻塞前可测部分全部通过）**：health 200 · collections 两库状态 · 上传 422 矩阵（非 PDF/未知 collection/伪造 PDF）· 占位行状态机（embedding 失败→failed 行→列表过滤→删除级联清理→404 复删）· 页图经 :3000 rewrite 200 image/jpeg · 评测白名单 422 · testset job 404 · 首页/文档页渲染。**依赖 embedding 的链路（真实入库/问答/出题/评测）待 09-23 配额重置**：`/opt/omnidocqa/e2e_after_quota.sh` 一键复验脚本已就位（PASS/FAIL 计数），ZCode 定时任务 09-24 10:00 自动跑并修复+归档。
+
+**Code smell 轮（功能 review 之外的清理，全部行为保持）**：后端 5 P1——CLI 子串分类→类型化、16384 魔法数收敛为 `MILVUS_MAX_QUERY_WINDOW`（6 处）、`ingest_one_pdf` 260 行拆三函数、`load_chunks` SystemExit→ValueError、documents API 10 处 try/except 收敛为 `@_guarded` 装饰器（响应形状逐字节等价）；前端 6 P1——20 个代理路由收敛 `proxyJson`（顺带统一漂移的错误形状）、jsonFetch 双副本合一、`image_url` 经 `/agent/*` rewrite 修复（**真 bug**：此前端上必 404）、组件拆分 + `TEXT_COLLECTION_ID` 谓词 + 常量命名。终审两路 VERDICT 均通过（遗留 P2 已当轮清完）。单测 280 全绿、ruff/tsc/eslint 全清。

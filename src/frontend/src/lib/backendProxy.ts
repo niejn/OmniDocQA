@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /*
- * 后端 FastAPI 源。服务端 API 路由（src/app/api/**）共用；next.config.mjs 的
- * rewrites 也读取同一变量。两者都在服务端启动时求值。
+ * 后端 FastAPI 源。服务端 API 路由（src/app/api/**）共用，运行时读 process.env；
+ * 注意 next.config.mjs 的 rewrites 虽然读同一变量，但在 `next build` 时求值并
+ * 固化——部署时构建命令必须带 BACKEND_API_BASE_URL（详见 next.config.mjs 注释）。
  */
 export const BACKEND_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://127.0.0.1:8000";
 

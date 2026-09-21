@@ -401,3 +401,6 @@ src/agent/tools/data/multimodal_eval/
 
 # MinIO source build workspace (build_minio_from_source.sh)
 .minio_src/
+
+# Next.js build info (tracked-by-mistake noise; regenerated on every build)
+src/frontend/tsconfig.tsbuildinfo

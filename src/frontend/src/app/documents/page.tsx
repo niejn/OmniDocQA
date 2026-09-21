@@ -39,7 +39,7 @@ const LS_COLLECTION = "documents.collection.v1";
 /* collections 接口不可达时的兜底固定库，保持旧行为（multimodal/text 可见可选）。 */
 const FALLBACK_COLLECTIONS: CollectionInfo[] = [
   { id: "multimodal", available: true, points: null, kind: "fixed" },
-  { id: "text", available: true, points: null, kind: "fixed" }
+  { id: TEXT_COLLECTION_ID, available: true, points: null, kind: "fixed" }
 ];
 
 /** top_k 输入框默认值：useState 初值与非法输入兜底共用，避免双写漂移。 */
