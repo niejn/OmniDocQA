@@ -2,17 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { jsonFetch, toErrorMessage } from "@/lib/jsonFetch";
+import { ChapterDrawer } from "./ChapterDrawer";
 import { DocumentList } from "./DocumentList";
 import { EvalPanel } from "./EvalPanel";
-import { jsonFetch } from "./jsonFetch";
+import { EvidenceCardView } from "./EvidenceCardView";
+import { FilterBar } from "./FilterBar";
 import { UploadPanel } from "./UploadPanel";
 import type {
   AskResult,
-  ChapterChunks,
   Collection,
   CollectionInfo,
   CollectionsResponse,
@@ -20,13 +20,16 @@ import type {
   DocumentFilters,
   DocumentListItem,
   DocumentSet,
-  Evidence,
   FilterFacetChapter,
   FiltersFacet,
   UploadCollectionOption,
   UploadResult
 } from "./types";
-import { collectionKind } from "./types";
+import {
+  TEXT_COLLECTION_ID,
+  collectionKind,
+  supportsFiltersAndSets
+} from "./types";
 
 /* ── localStorage keys (selection persistence + invalidation cleanup) ─ */
 
@@ -39,317 +42,16 @@ const FALLBACK_COLLECTIONS: CollectionInfo[] = [
   { id: "text", available: true, points: null, kind: "fixed" }
 ];
 
+/** top_k 输入框默认值：useState 初值与非法输入兜底共用，避免双写漂移。 */
+const DEFAULT_TOP_K = 8;
+
 function collectionLabel(id: string): string {
   if (id === "multimodal") return "多模态";
-  if (id === "text") return "财务文本（SEC）";
+  if (id === TEXT_COLLECTION_ID) return "财务文本（SEC）";
   return id;
 }
 
-/* ── FilterBar: books/chapters independent checkboxes + kind + sets ─── */
-
-function FilterBar({
-  facet,
-  filters,
-  onChange,
-  sets,
-  activeSetId,
-  onSetSelect,
-  onSetDelete,
-  onSaveSelection,
-  onOpenChapter
-}: {
-  facet: FiltersFacet | null;
-  filters: DocumentFilters;
-  onChange: (next: DocumentFilters) => void;
-  sets: DocumentSet[];
-  activeSetId: string | null;
-  onSetSelect: (setId: string | null) => void;
-  onSetDelete: (setId: string) => void;
-  onSaveSelection: () => void;
-  onOpenChapter: (chapter: FilterFacetChapter) => void;
-}) {
-  const [panelOpen, setPanelOpen] = useState(true);
-  const [bookQuery, setBookQuery] = useState("");
-
-  const books = useMemo(
-    () => (facet?.books || []).filter((b) => b.book_id.toLowerCase().includes(bookQuery.toLowerCase())),
-    [facet, bookQuery]
-  );
-  const toggleBook = (bookId: string) => {
-    const has = (filters.books || []).includes(bookId);
-    const books = has ? (filters.books || []).filter((b) => b !== bookId) : [...(filters.books || []), bookId];
-    onChange({ ...filters, books });
-  };
-  const toggleChapter = (docId: number) => {
-    const has = (filters.chapters || []).includes(docId);
-    const chapters = has
-      ? (filters.chapters || []).filter((c) => c !== docId)
-      : [...(filters.chapters || []), docId];
-    onChange({ ...filters, chapters });
-  };
-  const toggleKind = (kind: "text" | "image") => {
-    const has = (filters.kinds || []).includes(kind);
-    const kinds = has ? (filters.kinds || []).filter((k) => k !== kind) : [...(filters.kinds || []), kind];
-    onChange({ ...filters, kinds });
-  };
-
-  return (
-    <Card>
-      <CardHeader className="flex items-center justify-between">
-        <CardTitle>筛选器（书 / 章独立勾选，非级联）</CardTitle>
-        <div className="flex items-center gap-2">
-          {activeSetId && (
-            <Badge className="border-sky-300 bg-sky-50 text-sky-700">
-              集合生效
-            </Badge>
-          )}
-          <button className="text-xs text-zinc-500 underline" onClick={() => setPanelOpen((v) => !v)}>
-            {panelOpen ? "收起" : "展开"}
-          </button>
-        </div>
-      </CardHeader>
-      {panelOpen && (
-        <CardContent className="space-y-4">
-          {/* kind: 检索下推维度 */}
-          <div className="flex items-center gap-3 text-sm">
-            <span className="w-14 text-zinc-500">类型</span>
-            {(["text", "image"] as const).map((k) => (
-              <label key={k} className="flex items-center gap-1">
-                <input type="checkbox" checked={(filters.kinds || []).includes(k)} onChange={() => toggleKind(k)} />
-                {k === "text" ? "文本块" : "图片块"}
-              </label>
-            ))}
-          </div>
-          {/* set dropdown */}
-          <div className="flex items-center gap-3 text-sm">
-            <span className="w-14 text-zinc-500">集合</span>
-            <select
-              className="rounded border border-zinc-300 px-2 py-1 text-sm"
-              value={activeSetId || ""}
-              onChange={(e) => onSetSelect(e.target.value || null)}
-            >
-              <option value="">不使用集合</option>
-              {sets.map((s) => (
-                <option key={s.set_id} value={s.set_id}>
-                  {s.name}（{s.kind === "filter" ? "filter" : `${s.chunk_count ?? "-"} 块`}）
-                </option>
-              ))}
-            </select>
-            {activeSetId && (
-              <button className="text-xs text-red-500 underline" onClick={() => onSetDelete(activeSetId)}>
-                删除该集合
-              </button>
-            )}
-            <button className="text-xs text-sky-600 underline" onClick={onSaveSelection}>
-              存当前勾选为集合
-            </button>
-          </div>
-          {/* books + chapters */}
-          <div>
-            <input
-              className="mb-2 w-full rounded border border-zinc-300 px-2 py-1 text-sm"
-              placeholder="搜索书名…"
-              value={bookQuery}
-              onChange={(e) => setBookQuery(e.target.value)}
-            />
-            <div className="max-h-72 space-y-3 overflow-auto">
-              {books.map((book) => (
-                <div key={book.book_id} className="rounded border border-zinc-200 p-2">
-                  <label className="flex items-center gap-2 text-sm font-medium">
-                    <input
-                      type="checkbox"
-                      checked={(filters.books || []).includes(book.book_id)}
-                      onChange={() => toggleBook(book.book_id)}
-                    />
-                    《{book.book_id}》
-                    <span className="text-xs text-zinc-400">
-                      {book.chapter_count} 章 · {book.chunk_count} 块
-                    </span>
-                  </label>
-                  <div className="ml-6 mt-1 space-y-1">
-                    {book.chapters.map((chapter) => (
-                      <div key={chapter.document_id} className="flex items-center gap-2 text-xs">
-                        <label className="flex items-center gap-1">
-                          <input
-                            type="checkbox"
-                            checked={(filters.chapters || []).includes(chapter.document_id)}
-                            onChange={() => toggleChapter(chapter.document_id)}
-                          />
-                          第{chapter.chapter_index}章 · {chapter.filename}
-                        </label>
-                        <span className="text-zinc-400">
-                          {chapter.chunks.text}T/{chapter.chunks.image}I
-                        </span>
-                        <button
-                          className="text-sky-600 underline"
-                          onClick={() => onOpenChapter(chapter)}
-                        >
-                          浏览
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              {!books.length && <p className="text-sm text-zinc-400">暂无书籍；请先执行多模态入库。</p>}
-            </div>
-          </div>
-        </CardContent>
-      )}
-    </Card>
-  );
-}
-
-/* ── evidence card: text / image + selection checkbox ───────────────── */
-
-function EvidenceCardView({
-  evidence,
-  selected,
-  onToggle
-}: {
-  evidence: Evidence;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const isImage = evidence.kind === "image";
-  return (
-    <div
-      className={cn(
-        "rounded-md border p-3 text-sm transition-colors",
-        selected ? "border-sky-400 bg-sky-50/60" : "border-zinc-200 bg-white"
-      )}
-    >
-      <div className="mb-1 flex items-center gap-2">
-        <input type="checkbox" checked={selected} onChange={onToggle} />
-        <Badge>{isImage ? "图片" : "文本"}</Badge>
-        <span className="text-xs text-zinc-500">
-          #{evidence.rank} · score {evidence.score.toFixed(4)}
-          {evidence.book_id ? ` · 《${evidence.book_id}》` : ""}
-          {evidence.page_no != null ? ` · 第${evidence.page_no + 1}页` : ""}
-        </span>
-      </div>
-      {evidence.image_url && (
-        /* 同源代理，防穿越由后端 asset store 内聚 */
-        /* eslint-disable-next-line @next/next/no-img-element */
-        <img
-          src={evidence.image_url}
-          alt={evidence.title || "evidence"}
-          className="mb-2 max-h-56 rounded border border-zinc-200"
-        />
-      )}
-      <p className="whitespace-pre-wrap text-zinc-700">{evidence.text_preview.slice(0, 600)}</p>
-    </div>
-  );
-}
-
-/* ── chapter drawer (MM-4) ──────────────────────────────────────────── */
-
-function ChapterDrawer({
-  chapter,
-  onClose,
-  selectedIds,
-  onToggleChunk
-}: {
-  chapter: FilterFacetChapter | null;
-  onClose: () => void;
-  selectedIds: Set<string>;
-  onToggleChunk: (chunkId: string) => void;
-}) {
-  const [kind, setKind] = useState<"" | "text" | "image">("");
-  const [page, setPage] = useState(1);
-  const [data, setData] = useState<ChapterChunks | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setPage(1);
-  }, [chapter, kind]);
-
-  // 切章时立即清空旧数据，避免慢响应期间闪现上一章内容
-  useEffect(() => {
-    setData(null);
-  }, [chapter]);
-
-  useEffect(() => {
-    if (!chapter) return;
-    let stale = false; // 竞态守卫：翻页/切章后旧响应不得覆盖新状态
-    setError(null);
-    const params = new URLSearchParams({ page: String(page), page_size: "20" });
-    if (kind) params.set("kind", kind);
-    jsonFetch<ChapterChunks>(`/api/documents/chapters/${chapter.document_id}/chunks?${params}`)
-      .then((d) => {
-        if (!stale) setData(d);
-      })
-      .catch((e: Error) => {
-        if (!stale) setError(e.message);
-      });
-    return () => {
-      stale = true;
-    };
-  }, [chapter, kind, page]);
-
-  if (!chapter) return null;
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
-      <div
-        className="h-full w-[560px] overflow-auto bg-white p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">{chapter.chapter_label}</h3>
-          <button className="text-xs text-zinc-500 underline" onClick={onClose}>
-            关闭
-          </button>
-        </div>
-        <div className="mb-3 flex gap-3 text-sm">
-          {[
-            { v: "", label: "全部" },
-            { v: "text", label: "文本" },
-            { v: "image", label: "图片" }
-          ].map((opt) => (
-            <label key={opt.v} className="flex items-center gap-1">
-              <input type="radio" checked={kind === opt.v} onChange={() => setKind(opt.v as "" | "text" | "image")} />
-              {opt.label}
-            </label>
-          ))}
-        </div>
-        {error && <p className="text-sm text-red-500">{error}</p>}
-        {!data && !error && <p className="text-sm text-zinc-400">加载中…</p>}
-        <div className="space-y-2">
-          {(data?.chunks || []).map((chunk) => (
-            <EvidenceCardView
-              key={chunk.chunk_id}
-              evidence={chunk}
-              selected={!!chunk.chunk_id && selectedIds.has(chunk.chunk_id)}
-              onToggle={() => chunk.chunk_id && onToggleChunk(chunk.chunk_id)}
-            />
-          ))}
-        </div>
-        <div className="mt-3 flex items-center justify-between text-sm">
-          <button
-            className="rounded border px-2 py-1 disabled:opacity-40"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-          >
-            上一页
-          </button>
-          <span className="text-zinc-500">
-            第 {page} 页 / 共 {Math.max(1, Math.ceil((data?.total || 0) / (data?.page_size || 20)))} 页（{data?.total ?? 0} 块）
-          </span>
-          <button
-            className="rounded border px-2 py-1 disabled:opacity-40"
-            disabled={!!data && page * (data?.page_size || 20) >= (data?.total || 0)}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            下一页
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ── main page ──────────────────────────────────────────────────────── */
-
 export default function DocumentsPage() {
   const [facet, setFacet] = useState<FiltersFacet | null>(null);
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
@@ -360,7 +62,7 @@ export default function DocumentsPage() {
   const [sets, setSets] = useState<DocumentSet[]>([]);
   const [activeSetId, setActiveSetId] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
-  const [topK, setTopK] = useState(8);
+  const [topK, setTopK] = useState(DEFAULT_TOP_K);
   const [generateAnswer, setGenerateAnswer] = useState(true);
   const [result, setResult] = useState<AskResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -391,6 +93,13 @@ export default function DocumentsPage() {
     const list = await jsonFetch<DocumentListItem[]>("/api/documents/documents");
     setDocuments(Array.isArray(list) ? list : []);
     return list;
+  }, []);
+
+  /* 集合列表刷新：init 水合、保存勾选为集合、删除集合三处共用 */
+  const refreshSets = useCallback(async () => {
+    const d = await jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets");
+    setSets(d.sets);
+    return d.sets;
   }, []);
 
   /* init: facet + collections + persisted filters (with invalidation cleanup) */
@@ -451,8 +160,8 @@ export default function DocumentsPage() {
         setNotice("集合列表获取失败，已回退到固定库（multimodal / text）。");
         // 失败不置位 collectionHydrated：LS 中保存的库选择保留到下次成功 fetch
       });
-    jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets").then((d) => setSets(d.sets)).catch(() => undefined);
-  }, [refreshFacets, refreshDocuments]);
+    refreshSets().catch(() => undefined);
+  }, [refreshFacets, refreshDocuments, refreshSets]);
 
   useEffect(() => {
     if (!hydrated) return; // 水合前不写入，防止初始空 filters 覆盖用户持久化勾选
@@ -479,7 +188,7 @@ export default function DocumentsPage() {
       };
       // P2-5: filters/set 是多模态域能力，后端对动态多模态库同样支持——凡非 text 库一律下推；
       // text（SEC filings 纯文本域）维持原有提示逻辑，不携带筛选参数。
-      if (collection !== "text") {
+      if (supportsFiltersAndSets(collection)) {
         if (activeSetId) body.set_id = activeSetId;
         else if (filters.books?.length || filters.chapters?.length || filters.kinds?.length)
           body.filters = filters;
@@ -490,7 +199,7 @@ export default function DocumentsPage() {
       });
       setResult(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -519,12 +228,11 @@ export default function DocumentsPage() {
       });
       setNotice(`已保存集合「${saveName.trim()}」（${selectedIds.size} 块）`);
       setSaveName(null);
-      const d = await jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets");
-      setSets(d.sets);
+      await refreshSets();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toErrorMessage(e));
     }
-  }, [saveName, selectedIds]);
+  }, [saveName, selectedIds, refreshSets]);
 
   /* 创建动态集合：成功后刷新列表并自动选为新上传目标；失败 detail 已可见 */
   const createCollection = useCallback(
@@ -540,7 +248,7 @@ export default function DocumentsPage() {
           body: JSON.stringify(body)
         });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(toErrorMessage(e));
         return false;
       } finally {
         setCreatingCollection(false);
@@ -579,7 +287,7 @@ export default function DocumentsPage() {
         );
         await Promise.all([refreshFacets(), refreshDocuments()]);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(toErrorMessage(e));
       } finally {
         setUploading(false);
       }
@@ -601,7 +309,7 @@ export default function DocumentsPage() {
         setNotice(`已删除文档「${label}」（id ${doc.document_id}）`);
         await refreshFacets();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(toErrorMessage(e));
       } finally {
         setDeletingDocId(null);
       }
@@ -705,7 +413,7 @@ export default function DocumentsPage() {
                     max={50}
                     className="w-16 rounded border border-zinc-300 px-1 py-0.5"
                     value={topK}
-                    onChange={(e) => setTopK(Math.max(1, Math.min(50, Number(e.target.value) || 8)))}
+                    onChange={(e) => setTopK(Math.max(1, Math.min(50, Number(e.target.value) || DEFAULT_TOP_K)))}
                   />
                 </label>
                 <label className="flex items-center gap-1">
@@ -787,22 +495,21 @@ export default function DocumentsPage() {
               try {
                 await jsonFetch(`/api/documents/sets/${id}`, { method: "DELETE" });
               } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
+                setError(toErrorMessage(e));
                 return; // 删除失败：保留 activeSetId 与列表原状，错误已可见
               }
               setActiveSetId(null);
               try {
-                const d = await jsonFetch<{ sets: DocumentSet[] }>("/api/documents/sets");
-                setSets(d.sets);
+                await refreshSets();
               } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
+                setError(toErrorMessage(e));
               }
             }}
             onSaveSelection={saveSelectionAsSet}
             onOpenChapter={(ch) => setChapter(ch)}
           />
           <DocumentList documents={documents} deletingId={deletingDocId} onDelete={(doc) => void handleDeleteDocument(doc)} />
-          {collection === "text" && (
+          {!supportsFiltersAndSets(collection) && (
             <p className="text-xs text-zinc-400">text 库为 SEC filings，筛选器/集合不生效（多模态域专用）。</p>
           )}
         </aside>

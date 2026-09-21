@@ -8,14 +8,18 @@ boundary); the router is registered in api/server.py.
 
 Error contract (§15): 400 bad asset name · 404 unknown set/image/document ·
 422 contract violations & filter typo guard (missing lists in detail) ·
-502 upstream model/store failures.
+502 upstream model/store failures. The uniform mapping lives in the
+:func:`_guarded` decorator; two endpoints keep bespoke handling (see their
+docstrings for why).
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -58,6 +62,38 @@ def _http_error(exc: DocumentAskError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=detail)
 
 
+def _guarded(stage: str) -> Callable:
+    """Uniform error mapping for document endpoints (shape-preserving dedup).
+
+    DocumentAskError → its own status via :func:`_http_error`; cascade
+    failures → 502 ``{"message": "cascade failed at <step>"}``; any other
+    failure → 502 ``{"message": str(exc)[:300]}``. HTTPException raised by
+    the endpoint itself passes through untouched.
+    """
+
+    def deco(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await fn(*args, **kwargs)
+            except HTTPException:
+                raise
+            except DocumentAskError as exc:
+                raise _http_error(exc) from exc
+            except DocumentCascadeError as exc:
+                logger.error("[Documents] cascade failed at {}: {}", exc.step, exc)
+                raise HTTPException(
+                    status_code=502, detail={"message": f"cascade failed at {exc.step}"}
+                ) from exc
+            except Exception as exc:
+                logger.exception("[Documents] {} failed", stage)
+                raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+
+        return wrapper
+
+    return deco
+
+
 class DocumentFilters(BaseModel):
     books: list[str] | None = None
     chapters: list[int] | None = None
@@ -80,24 +116,20 @@ class CreateSetRequest(BaseModel):
 
 
 @router.post("/ask")
+@_guarded("ask")
 async def ask_documents_endpoint(request: DocumentAskRequest) -> dict:
-    try:
-        return await ask_documents(
-            question=request.question,
-            collection=request.collection,
-            top_k=request.top_k,
-            generate_answer=request.generate_answer,
-            filters=request.filters.model_dump(exclude_none=True) if request.filters else None,
-            set_id=request.set_id,
-        )
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except Exception as exc:
-        logger.exception("[Documents] ask failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    return await ask_documents(
+        question=request.question,
+        collection=request.collection,
+        top_k=request.top_k,
+        generate_answer=request.generate_answer,
+        filters=request.filters.model_dump(exclude_none=True) if request.filters else None,
+        set_id=request.set_id,
+    )
 
 
 @router.get("/collections")
+@_guarded("collections")
 async def collections_endpoint() -> dict:
     return await get_collections()
 
@@ -107,8 +139,9 @@ def page_image_endpoint(
     document_id: int = Query(...),
     name: str = Query(..., description="asset basename, e.g. page_0.jpg"),
 ):
-    # Sync endpoint: the asset store does file/MinIO IO — FastAPI runs `def`
-    # handlers on the threadpool so the event loop is never blocked (review A1).
+    # Sync endpoint (threadpool): asset store does file/MinIO IO. It keeps its
+    # own try/except because _guarded's async wrapper would silently turn this
+    # into an async handler and put the store IO back on the event loop.
     try:
         data = get_page_image(document_id, name)
     except DocumentAskError as exc:
@@ -120,26 +153,19 @@ def page_image_endpoint(
 
 
 @router.get("/filters")
+@_guarded("filters")
 async def filters_endpoint() -> dict:
-    try:
-        return await get_filters()
-    except Exception as exc:
-        logger.exception("[Documents] filters failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    return await get_filters()
 
 
 @router.get("/sets")
+@_guarded("list sets")
 async def list_sets_endpoint() -> dict:
-    try:
-        return {"sets": await list_sets_with_staleness()}
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except Exception as exc:
-        logger.exception("[Documents] list sets failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    return {"sets": await list_sets_with_staleness()}
 
 
 @router.post("/sets")
+@_guarded("create set")
 async def create_set_endpoint(request: CreateSetRequest) -> dict:
     filter_json = request.filter.model_dump(exclude_none=True) if request.filter else None
     has_filter = bool(filter_json and any(filter_json.values()))
@@ -149,43 +175,30 @@ async def create_set_endpoint(request: CreateSetRequest) -> dict:
             status_code=422,
             detail={"message": "pass exactly one of filter or chunk_ids"},
         )
-    try:
-        created = await create_set(
-            name=request.name,
-            filter_json=filter_json if has_filter else None,
-            chunk_ids=request.chunk_ids if has_chunks else None,
-        )
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
+    created = await create_set(
+        name=request.name,
+        filter_json=filter_json if has_filter else None,
+        chunk_ids=request.chunk_ids if has_chunks else None,
+    )
     return {"set": created}
 
 
 @router.delete("/sets/{set_id}")
+@_guarded("delete set")
 async def delete_set_endpoint(set_id: str) -> dict:
-    try:
-        await delete_set(set_id)
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except Exception as exc:  # review A2: upstream store failure → 502
-        logger.exception("[Documents] delete set failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    await delete_set(set_id)
     return {"deleted": set_id}
 
 
 @router.get("/chapters/{document_id}/chunks")
+@_guarded("chapter chunks")
 async def chapter_chunks_endpoint(
     document_id: int,
     kind: Literal["text", "image"] | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> dict:
-    try:
-        return await get_chapter_chunks(document_id, kind=kind, page=page, page_size=page_size)
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except Exception as exc:
-        logger.exception("[Documents] chapter chunks failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    return await get_chapter_chunks(document_id, kind=kind, page=page, page_size=page_size)
 
 
 # ── §8.5.2 upload / inventory / delete + §8.5.3 dynamic collections ─────
@@ -204,6 +217,8 @@ async def upload_document_endpoint(
 
     422 matrix: non-PDF · > MULTIMODAL_UPLOAD_MAX_MB · > MAX_PAGES (from the
     ingest core's ValueError) · unknown collection. Store failures → 502.
+    Keeps its own try/except: 422-vs-502 here is decided by
+    ``classify_upload_failure`` on the exception TYPE, not the uniform 502.
     """
     filename = file.filename or ""
     try:
@@ -242,30 +257,16 @@ async def upload_document_endpoint(
 
 
 @router.get("/documents")
+@_guarded("list documents")
 async def list_documents_endpoint() -> list[dict]:
     """Ingested multimodal documents: BARE array, document_id DESC (frontend contract)."""
-    try:
-        return await list_documents()
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except Exception as exc:
-        logger.exception("[Documents] list documents failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    return await list_documents()
 
 
 @router.delete("/documents/{document_id}")
+@_guarded("delete document")
 async def delete_document_endpoint(document_id: int) -> dict:
-    try:
-        await delete_document(document_id)
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except DocumentCascadeError as exc:
-        logger.error("[Documents] cascade failed at {}: {}", exc.step, exc)
-        # Same {"message": ...} shape as the other endpoints (review P2-4).
-        raise HTTPException(status_code=502, detail={"message": f"cascade failed at {exc.step}"}) from exc
-    except Exception as exc:
-        logger.exception("[Documents] delete document failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    await delete_document(document_id)
     return {"deleted": True}
 
 
@@ -276,19 +277,14 @@ class CreateCollectionRequest(BaseModel):
 
 
 @router.post("/collections", status_code=201)
+@_guarded("create collection")
 async def create_collection_endpoint(request: CreateCollectionRequest) -> dict:
     """§8.5.3: create a dynamic Milvus collection and register it (201 on success)."""
-    try:
-        return await create_dynamic_collection(
-            name=request.name,
-            embedding_provider=request.embedding_provider,
-            description=request.description,
-        )
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    except Exception as exc:
-        logger.exception("[Documents] create collection failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    return await create_dynamic_collection(
+        name=request.name,
+        embedding_provider=request.embedding_provider,
+        description=request.description,
+    )
 
 
 # ── §8.5.4 testset generation / evaluation jobs ──────────────────────────
@@ -305,40 +301,26 @@ class EvaluateRequest(BaseModel):
 
 
 @router.post("/generate-testset", status_code=202)
+@_guarded("start testset job")
 async def generate_testset_endpoint(request: GenerateTestsetRequest) -> dict:
     """Validate → background question drafting (T2.5 core) → 202 {job_id}."""
-    try:
-        target = await resolve_multimodal_collection(request.collection)
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    try:
-        job_id = await start_testset_job(collection=target, testset_size=request.testset_size)
-    except Exception as exc:
-        logger.exception("[Documents] start testset job failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    target = await resolve_multimodal_collection(request.collection)
+    job_id = await start_testset_job(collection=target, testset_size=request.testset_size)
     return {"job_id": job_id}
 
 
 @router.get("/testset/{job_id}")
+@_guarded("testset job status")
 async def testset_job_endpoint(job_id: str) -> dict:
     """Job status: running | completed (questions list) | failed (error)."""
-    try:
-        return get_job(job_id)
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
+    return get_job(job_id)
 
 
 @router.post("/evaluate", status_code=202)
+@_guarded("start evaluation job")
 async def evaluate_endpoint(request: EvaluateRequest) -> dict:
     """Whitelist-validated testset → background hard-assertion eval → 202 {job_id}."""
-    try:
-        resolved = resolve_testset_path(request.testset_path)
-        target = await resolve_multimodal_collection(request.collection)
-    except DocumentAskError as exc:
-        raise _http_error(exc) from exc
-    try:
-        job_id = await start_evaluation_job(collection=target, testset_path=resolved)
-    except Exception as exc:
-        logger.exception("[Documents] start evaluate job failed")
-        raise HTTPException(status_code=502, detail={"message": str(exc)[:300]}) from exc
+    resolved = resolve_testset_path(request.testset_path)
+    target = await resolve_multimodal_collection(request.collection)
+    job_id = await start_evaluation_job(collection=target, testset_path=resolved)
     return {"job_id": job_id}

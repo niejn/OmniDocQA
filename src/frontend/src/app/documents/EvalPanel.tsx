@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { jsonFetch } from "./jsonFetch";
-import { collectionKind } from "./types";
+import { jsonFetch, toErrorMessage } from "@/lib/jsonFetch";
+import { TEXT_COLLECTION_ID, collectionKind } from "./types";
 import type {
   CollectionInfo,
   EvalSummarySection,
@@ -16,6 +16,8 @@ import type {
 /* ── eval panel: RAGAS testset generation + evaluation (202 job + polling) ── */
 
 const POLL_INTERVAL_MS = 3000;
+/* 轮询提示文案与 POLL_INTERVAL_MS 同源，改常量文案不撒谎。 */
+const POLL_INTERVAL_LABEL = `每 ${POLL_INTERVAL_MS / 1000}s`;
 // P2-2: 100 题 LLM 生成实测可能超 3 分钟，轮询上限从 60 次（约 180s）放宽到 200 次（约 600s）。
 const MAX_POLLS = 200;
 
@@ -119,7 +121,7 @@ export function EvalPanel({ collections }: { collections: CollectionInfo[] }) {
   const evalCollections = useMemo(
     () =>
       collections.filter((c) => {
-        if (c.id === "text") return false;
+        if (c.id === TEXT_COLLECTION_ID) return false;
         return collectionKind(c) !== "fixed" || c.id === "multimodal";
       }),
     [collections]
@@ -173,7 +175,7 @@ export function EvalPanel({ collections }: { collections: CollectionInfo[] }) {
             } catch (e) {
               if (isStale()) return;
               settle();
-              setError(e instanceof Error ? e.message : String(e));
+              setError(toErrorMessage(e));
             }
           })();
         }, POLL_INTERVAL_MS);
@@ -205,7 +207,7 @@ export function EvalPanel({ collections }: { collections: CollectionInfo[] }) {
     setError(null);
     setMetrics(null);
     setMetricsRaw(null);
-    setInfo("评测题生成中…（每 3s 轮询任务状态）");
+    setInfo(`评测题生成中…（${POLL_INTERVAL_LABEL} 轮询任务状态）`);
     setGenRunning(true);
     try {
       const started = await jsonFetch<StartJobResponse>("/api/documents/generate-testset", {
@@ -230,7 +232,7 @@ export function EvalPanel({ collections }: { collections: CollectionInfo[] }) {
       });
     } catch (e) {
       setGenRunning(false);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toErrorMessage(e));
     }
   }, [genRunning, evalRunning, collection, size, pollJob]);
 
@@ -248,7 +250,7 @@ export function EvalPanel({ collections }: { collections: CollectionInfo[] }) {
     setError(null);
     setMetrics(null);
     setMetricsRaw(null);
-    setInfo("评测运行中…（每 3s 轮询任务状态）");
+    setInfo(`评测运行中…（${POLL_INTERVAL_LABEL} 轮询任务状态）`);
     setEvalRunning(true);
     try {
       const started = await jsonFetch<StartJobResponse>("/api/documents/evaluate", {
@@ -273,7 +275,7 @@ export function EvalPanel({ collections }: { collections: CollectionInfo[] }) {
       });
     } catch (e) {
       setEvalRunning(false);
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toErrorMessage(e));
     }
   }, [genRunning, evalRunning, collection, testset, pollJob]);
 

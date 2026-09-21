@@ -32,6 +32,7 @@ import asyncpg
 from core.config import config
 from loguru import logger
 
+from ..milvus_store import MILVUS_MAX_QUERY_WINDOW
 from ..multimodal_asset_store import AssetKeyError, get_asset_store
 from ..multimodal_vectorizer import build_vectorizer
 from ..rag_stage_log import log_rag, rag_request_scope
@@ -46,10 +47,6 @@ from .document_repository import (
 VALID_KINDS = ("text", "image")
 
 backend = MilvusMultimodalDenseBackend()
-
-# Milvus query window: offset+limit beyond this raises a server-side error, so
-# the chapter-browsing pagination guard rejects such pages client-side (422).
-MILVUS_MAX_WINDOW = 16384
 
 
 class DocumentAskError(Exception):
@@ -542,11 +539,12 @@ async def get_chapter_chunks(
     page = max(1, int(page))
     page_size = max(1, min(int(page_size), 100))
     offset = (page - 1) * page_size
-    if offset + page_size > MILVUS_MAX_WINDOW:
-        # Milvus rejects offset+limit > 16384 — a client-sized page, so 422 not 502.
+    if offset + page_size > MILVUS_MAX_QUERY_WINDOW:
+        # Milvus rejects offset+limit beyond the query window — a client-sized
+        # page, so 422 not 502.
         raise DocumentAskError(
             f"page {page} x page_size {page_size} exceeds the Milvus query window "
-            f"(offset+limit must be <= {MILVUS_MAX_WINDOW})"
+            f"(offset+limit must be <= {MILVUS_MAX_QUERY_WINDOW})"
         )
     total = await asyncio.to_thread(backend.count_document_chunks, int(document_id), kind)
     chunks = await asyncio.to_thread(

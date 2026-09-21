@@ -42,6 +42,11 @@ _MAX_TITLE_CHARS = 1000
 _ID_MAX_LENGTH = 64
 _INSERT_BATCH = 200
 
+# Milvus query window: offset+limit beyond this is rejected server-side, so
+# every full-scan/pagination query caps here (imported by the multimodal
+# backend, the asset-GC script and the document library's 422 pagination guard).
+MILVUS_MAX_QUERY_WINDOW = 16384
+
 # metadata key recording how many leading chars of `text` are the enrichment
 # prefix (repeated title/search_hints) rather than node body text.
 _TEXT_PREFIX_META_KEY = "_milvus_text_prefix_chars"
@@ -623,7 +628,7 @@ def rebuild_texts(
             collection_name=collection,
             filter="document_id > 0",
             output_fields=["document_id"],
-            limit=16384,
+            limit=MILVUS_MAX_QUERY_WINDOW,
         )
         document_ids = sorted({int(row["document_id"]) for row in probe})
 
@@ -653,7 +658,7 @@ def rebuild_texts(
             collection_name=collection,
             filter=f"document_id == {int(document_id)}",
             output_fields=[*_OUTPUT_FIELDS, "dense"],
-            limit=16384,
+            limit=MILVUS_MAX_QUERY_WINDOW,
         )
         changed_this_doc = 0
         for row in rows:

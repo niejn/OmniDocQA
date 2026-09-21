@@ -103,7 +103,7 @@ def _write_evalset(tmp_path):
 
 
 def _run_main(tmp_path, monkeypatch, baseline: dict | None, hit: bool = True) -> int:
-    async def fake_retrieve(questions, top_k):
+    async def fake_retrieve(questions, top_k, collection=None, progress=None):
         return [_ok_row("q?", 100.0, hit=hit)]
 
     monkeypatch.setattr(mm, "retrieve_all", fake_retrieve)
@@ -324,7 +324,7 @@ def test_apply_ragas_multimodal_scores_reference_against_contexts():
 
 
 def test_main_ragas_flag_off_by_default(tmp_path, monkeypatch):
-    async def fake_retrieve(questions, top_k):
+    async def fake_retrieve(questions, top_k, collection=None, progress=None):
         return [_mm_row("q?", "ref")]
 
     monkeypatch.setattr(mm, "retrieve_all", fake_retrieve)
@@ -345,7 +345,7 @@ def test_main_ragas_flag_off_by_default(tmp_path, monkeypatch):
 
 
 def test_main_ragas_flag_on_import_failure_keeps_gate_and_exit_code(tmp_path, monkeypatch):
-    async def fake_retrieve(questions, top_k):
+    async def fake_retrieve(questions, top_k, collection=None, progress=None):
         return [_mm_row("q?", "ref")]
 
     monkeypatch.setattr(mm, "retrieve_all", fake_retrieve)

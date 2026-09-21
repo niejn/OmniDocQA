@@ -1,24 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { proxyJson } from "@/lib/backendProxy";
 
-const BACKEND_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://127.0.0.1:8000";
-
-export async function GET(_: NextRequest, context: { params: Promise<{ traceId: string }> }) {
-  try {
-    const { traceId } = await context.params;
-    const safeTraceId = encodeURIComponent(traceId || "");
-    const upstream = await fetch(`${BACKEND_BASE_URL}/agent/api/report/${safeTraceId}`, {
-      method: "GET",
-      cache: "no-store"
-    });
-    const text = await upstream.text();
-    return new NextResponse(text, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("Content-Type") || "application/json; charset=utf-8"
-      }
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Proxy request failed";
-    return NextResponse.json({ detail: message }, { status: 500 });
-  }
+export async function GET(req: NextRequest, context: { params: Promise<{ traceId: string }> }) {
+  const { traceId } = await context.params;
+  const safeTraceId = encodeURIComponent(traceId || "");
+  return proxyJson(req, `/agent/api/report/${safeTraceId}`);
 }

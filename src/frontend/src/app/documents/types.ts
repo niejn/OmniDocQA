@@ -6,6 +6,16 @@
  */
 export type Collection = string;
 
+/* ── 库域规则（"text" 纯文本域 vs 多模态域）───────────────────────────── */
+
+/** 内置纯文本（SEC filings）库 id。 */
+export const TEXT_COLLECTION_ID = "text";
+
+/** 该库是否支持筛选器/集合下推（多模态域能力）；text 域后端不接受这些参数。 */
+export function supportsFiltersAndSets(id: string): boolean {
+  return id !== TEXT_COLLECTION_ID;
+}
+
 /* ── collections contract (backend: GET/POST /agent/api/documents/collections) ── */
 
 export type CollectionKind = "fixed" | "dynamic";

@@ -25,6 +25,7 @@ if str(AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(AGENT_ROOT))
 
 from tools.multimodal_ingest import (  # noqa: E402  (re-exported for tests/CLI parity)
+    UploadRejectedError,
     build_book_meta,
     ingest_one_pdf,
     natural_sort_key,
@@ -81,15 +82,15 @@ async def run(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": False, "document_id": document_id, "error": str(exc)}, ensure_ascii=False))
             exit_code = EXIT_PARSE_UNREACHABLE
             break
-        except ValueError as exc:
-            if "embedding" in str(exc) or "collection" in str(exc) or "dim" in str(exc):
-                logger.error("[IngestMm] store failure: {}", exc)
-                print(json.dumps({"ok": False, "document_id": document_id, "error": str(exc)}, ensure_ascii=False))
-                exit_code = EXIT_STORE_FAILURE
-                break
+        except UploadRejectedError as exc:  # §16/§20.2 guards: param-class rejection
             logger.error("[IngestMm] rejected: {}", exc)
             print(json.dumps({"ok": False, "document_id": document_id, "error": str(exc)}, ensure_ascii=False))
             exit_code = EXIT_PARAM_ERROR
+            break
+        except ValueError as exc:  # store failure: dim/collection/embedding family (§16)
+            logger.error("[IngestMm] store failure: {}", exc)
+            print(json.dumps({"ok": False, "document_id": document_id, "error": str(exc)}, ensure_ascii=False))
+            exit_code = EXIT_STORE_FAILURE
             break
         except Exception as exc:
             logger.exception("[IngestMm] store failure")

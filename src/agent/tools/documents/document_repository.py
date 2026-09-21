@@ -107,12 +107,7 @@ async def create_set(*, name: str, kind: str, filter_json: dict | None = None, c
     return {"set_id": set_id, "name": clean_name, "kind": kind, "filter_json": filter_json, "chunk_ids": chunk_ids}
 
 
-async def get_set(set_id: str) -> dict[str, Any] | None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM document_sets WHERE set_id = $1", str(set_id))
-    if row is None:
-        return None
+def _row_to_set(row: Any) -> dict[str, Any]:
     return {
         "set_id": row["set_id"],
         "name": row["name"],
@@ -123,21 +118,27 @@ async def get_set(set_id: str) -> dict[str, Any] | None:
     }
 
 
+def _row_to_collection(row: Any) -> dict[str, Any]:
+    return {
+        "collection_name": row["collection_name"],
+        "embedding_provider": row["embedding_provider"],
+        "description": row["description"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+async def get_set(set_id: str) -> dict[str, Any] | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM document_sets WHERE set_id = $1", str(set_id))
+    return _row_to_set(row) if row is not None else None
+
+
 async def list_sets() -> list[dict[str, Any]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM document_sets ORDER BY created_at DESC")
-    return [
-        {
-            "set_id": row["set_id"],
-            "name": row["name"],
-            "kind": row["kind"],
-            "filter_json": json.loads(row["filter_json"]) if row["filter_json"] else None,
-            "chunk_ids": json.loads(row["chunk_ids"]) if row["chunk_ids"] else None,
-            "created_at": row["created_at"].isoformat(),
-        }
-        for row in rows
-    ]
+    return [_row_to_set(row) for row in rows]
 
 
 async def delete_set(set_id: str) -> bool:
@@ -196,12 +197,7 @@ async def insert_dynamic_collection(
             embedding_provider,
             description,
         )
-    return {
-        "collection_name": row["collection_name"],
-        "embedding_provider": row["embedding_provider"],
-        "description": row["description"],
-        "created_at": row["created_at"].isoformat(),
-    }
+    return _row_to_collection(row)
 
 
 async def get_dynamic_collection(collection_name: str) -> dict[str, Any] | None:
@@ -212,14 +208,7 @@ async def get_dynamic_collection(collection_name: str) -> dict[str, Any] | None:
             "FROM document_collections WHERE collection_name = $1",
             str(collection_name),
         )
-    if row is None:
-        return None
-    return {
-        "collection_name": row["collection_name"],
-        "embedding_provider": row["embedding_provider"],
-        "description": row["description"],
-        "created_at": row["created_at"].isoformat(),
-    }
+    return _row_to_collection(row) if row is not None else None
 
 
 async def list_dynamic_collections() -> list[dict[str, Any]]:
@@ -229,15 +218,7 @@ async def list_dynamic_collections() -> list[dict[str, Any]]:
             "SELECT collection_name, embedding_provider, description, created_at "
             "FROM document_collections ORDER BY created_at DESC"
         )
-    return [
-        {
-            "collection_name": row["collection_name"],
-            "embedding_provider": row["embedding_provider"],
-            "description": row["description"],
-            "created_at": row["created_at"].isoformat(),
-        }
-        for row in rows
-    ]
+    return [_row_to_collection(row) for row in rows]
 
 
 # ── multimodal document inventory (upload API §8.5.2) ────────────────────

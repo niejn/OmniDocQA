@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { BACKEND_BASE_URL } from "@/lib/backendProxy";
 
-const BACKEND_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://127.0.0.1:8000";
-
+/* multipart 代理特例：FormData 转发需由 fetch 自动生成带 boundary 的 Content-Type，不走 proxyJson */
 export async function POST(req: NextRequest) {
   try {
-    // multipart 透传：重新组装 FormData 转发，由 fetch 自动生成带 boundary 的 Content-Type
     const form = await req.formData();
     const upstream = await fetch(`${BACKEND_BASE_URL}/agent/api/documents/upload`, {
       method: "POST",

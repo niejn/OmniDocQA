@@ -29,7 +29,7 @@ from core.config import config
 from loguru import logger
 from pymilvus import DataType, Function, FunctionType
 
-from ..milvus_store import get_client
+from ..milvus_store import MILVUS_MAX_QUERY_WINDOW, get_client
 from ..multimodal_vectorizer import MultimodalVectorizer
 from ..rag_stage_log import log_rag
 
@@ -378,7 +378,7 @@ class MilvusMultimodalDenseBackend:
             collection_name=self.collection,
             filter=" and ".join(clauses),
             output_fields=["id"],
-            limit=16384,
+            limit=MILVUS_MAX_QUERY_WINDOW,
         )
         return len(rows)
 

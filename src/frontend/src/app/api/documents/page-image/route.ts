@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { BACKEND_BASE_URL } from "@/lib/backendProxy";
 
-const BACKEND_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://127.0.0.1:8000";
-
+/* 二进制代理特例：成功分支透传图片字节 + 缓存头，不走 proxyJson 的 JSON 文本通道 */
 export async function GET(req: NextRequest) {
   try {
     const documentId = req.nextUrl.searchParams.get("document_id") || "";

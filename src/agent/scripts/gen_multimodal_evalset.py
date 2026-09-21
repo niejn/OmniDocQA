@@ -50,12 +50,12 @@ def load_chunks(limit_per_book: int = 60, collection: str | None = None) -> list
     the testset-generation API passes the caller's dynamic collection through.
     """
     from core.config import config
-    from tools.milvus_store import get_client
+    from tools.milvus_store import MILVUS_MAX_QUERY_WINDOW, get_client
 
     target = (collection or config.multimodal_collection or "").strip()
     client = get_client()
     if not client.has_collection(target):
-        raise SystemExit(f"collection {target!r} missing; ingest first")
+        raise ValueError(f"collection {target!r} missing; ingest first")
     rows = client.query(
         collection_name=target,
         filter="document_id > 0",
@@ -63,7 +63,7 @@ def load_chunks(limit_per_book: int = 60, collection: str | None = None) -> list
             "document_id", "filename", "title", "kind", "page_no",
             "text", "category", "image_ref", "book_id", "chapter_label",
         ],
-        limit=16384,
+        limit=MILVUS_MAX_QUERY_WINDOW,
     )
     by_book: dict[str, list[dict]] = defaultdict(list)
     for row in rows:

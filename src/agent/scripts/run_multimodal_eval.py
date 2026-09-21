@@ -30,6 +30,7 @@ import json
 import statistics
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -41,20 +42,12 @@ if str(AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(AGENT_ROOT))
 
 
-def load_evalset(path: Path, keep_leaks: bool | None = None) -> list[dict]:
+def load_evalset(path: Path, keep_leaks: bool) -> list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     questions = payload.get("questions") or []
     # Drop leak suspects unless explicitly kept (human curation hook).
-    flag = args_keep_leaks() if keep_leaks is None else keep_leaks
-    kept = [q for q in questions if flag or not q.get("leak_suspect")]
+    kept = [q for q in questions if keep_leaks or not q.get("leak_suspect")]
     return kept
-
-
-_KEEP_LEAKS = False
-
-
-def args_keep_leaks() -> bool:
-    return _KEEP_LEAKS
 
 
 def rank_metrics(hit_chunk_ids: list[str], gold: list[str], k: int) -> dict:
@@ -69,7 +62,12 @@ def rank_metrics(hit_chunk_ids: list[str], gold: list[str], k: int) -> dict:
     }
 
 
-async def retrieve_all(questions: list[dict], top_k: int, collection: str | None = None) -> list[dict]:
+async def retrieve_all(
+    questions: list[dict],
+    top_k: int,
+    collection: str | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> list[dict]:
     from tools.multimodal_vectorizer import build_vectorizer
     from tools.retrieval_backends.dense_milvus_multimodal import (
         MilvusMultimodalDenseBackend,
@@ -77,6 +75,7 @@ async def retrieve_all(questions: list[dict], top_k: int, collection: str | None
 
     # collection=None keeps the CLI default (config.multimodal_collection); the
     # evaluate API passes the caller's dynamic collection through.
+    say = progress or print
     backend = MilvusMultimodalDenseBackend(collection=collection)
     vectorizer = build_vectorizer()
     rows: list[dict] = []
@@ -114,7 +113,7 @@ async def retrieve_all(questions: list[dict], top_k: int, collection: str | None
                     "error": None,
                 }
             )
-            print(f"  [{i}/{len(questions)}] {len(hits)} hits in {rows[-1]['latency_ms']}ms")
+            say(f"  [{i}/{len(questions)}] {len(hits)} hits in {rows[-1]['latency_ms']}ms")
     finally:
         await vectorizer.aclose()
     return rows
@@ -439,10 +438,7 @@ async def run_evaluation_core(
     say = progress or print
     questions = load_evalset(evalset, keep_leaks=keep_leaks)
     say(f"evaluating {len(questions)} questions (top_k={top_k}) ...")
-    if collection:
-        rows = await retrieve_all(questions, top_k, collection=collection)
-    else:
-        rows = await retrieve_all(questions, top_k)  # CLI path: 2-arg contract preserved
+    rows = await retrieve_all(questions, top_k, collection=collection, progress=progress)
     results = hard_assertions(rows, top_k)
     summary = summarize(results)
     report = {
@@ -459,7 +455,6 @@ async def run_evaluation_core(
 
 
 def main() -> int:
-    global _KEEP_LEAKS
     parser = argparse.ArgumentParser(description="Run multimodal gold-set evaluation (hard assertions)")
     parser.add_argument("--evalset", type=Path, default=Path("tools/data/multimodal_evalset_draft.json"))
     parser.add_argument("--top-k", type=int, default=8)
@@ -477,7 +472,6 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
-    _KEEP_LEAKS = args.keep_leaks
 
     report = asyncio.run(
         run_evaluation_core(
