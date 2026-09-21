@@ -313,13 +313,16 @@ async def mark_document_ingest_status(document_id: int, status: str) -> bool:
 
 
 async def multimodal_document_overview() -> list[dict[str, Any]]:
-    """Ingested multimodal documents for GET /documents/documents (id DESC).
+    """Inventory for GET /documents/documents (id DESC).
 
     Rows are read straight from rag_documents.metadata (written by
     multimodal_ingest.ingest_one_pdf): filename lives in source_uri, title in
-    chapter_label, counts in pages/chunks. Placeholder rows mid-upload
-    (status=ingesting) or failed uploads (status=failed) are excluded; legacy
-    CLI-ingested rows have no status key and show as before (review P1-2).
+    chapter_label, counts in pages/chunks. Completed rows AND in-flight
+    placeholders (status=ingesting) are listed — the ingesting row is what
+    keeps an upload visible across a page refresh (finding: the old
+    state-in-React indicator vanished on reload). Failed uploads (status=
+    failed) stay excluded; legacy CLI-ingested rows have no status key and
+    show as completed (review P1-2).
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -328,7 +331,7 @@ async def multimodal_document_overview() -> list[dict[str, Any]]:
             SELECT id, title, source_uri, metadata, created_at
             FROM rag_documents
             WHERE metadata->>'source' = 'multimodal_pdf'
-              AND COALESCE(metadata->>'status', 'completed') = 'completed'
+              AND COALESCE(metadata->>'status', 'completed') IN ('completed', 'ingesting')
             ORDER BY id DESC
             """
         )
@@ -345,7 +348,12 @@ async def multimodal_document_overview() -> list[dict[str, Any]]:
 
 
 def build_document_list_item(row: dict[str, Any]) -> dict[str, Any]:
-    """Pure mapper overview-row → API item (unit-testable without PG, §8.5.2)."""
+    """Pure mapper overview-row → API item (unit-testable without PG, §8.5.2).
+
+    ``status`` distinguishes in-flight uploads (ingesting placeholder rows are
+    part of the inventory so a page refresh during upload keeps showing them)
+    from finished ones; counts are 0 for placeholders (metadata not yet written).
+    """
     meta = row.get("metadata") or {}
     filename = _source_filename(row.get("source_uri") or "")
     chunks = meta.get("chunks") or {}
@@ -353,6 +361,7 @@ def build_document_list_item(row: dict[str, Any]) -> dict[str, Any]:
     chapter_label = str(meta.get("chapter_label") or row.get("title") or filename)
     return {
         "document_id": int(row["document_id"]),
+        "status": str(meta.get("status") or "completed"),
         "filename": str(meta.get("filename") or filename),
         "title": str(meta.get("chapter_label") or row.get("title") or filename),
         "page_count": int(meta.get("pages") or 0),

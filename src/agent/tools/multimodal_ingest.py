@@ -71,14 +71,6 @@ def build_book_meta(book: str | None, chapter_start: int, files: list[Path]) -> 
     return metas
 
 
-async def _embed_for_chunking(texts: list[str]) -> list[list[float]]:
-    """Semantic-split embedder: reuse the TEXT embedding pipeline (chunk signal only)."""
-    from tools.vectorizer import generate_embeddings_batch
-
-    out = await generate_embeddings_batch(texts)
-    return [v for v in out if v]
-
-
 def _prev_next_context(chunks: list, index: int) -> tuple[str, str]:
     """Adjacent text for the describe step: nearest text chunks around position."""
     prev_text = ""
@@ -358,7 +350,27 @@ async def ingest_one_pdf(
     if dry_run:
         chunks = await chunk_document(pages, embed_fn=None)
     else:
-        chunks = await chunk_document(pages, embed_fn=_embed_for_chunking)
+        # Semantic-split embedder: the ARK multimodal endpoint with text-only
+        # content blocks (deployment finding #7). The old path went through the
+        # TEXT embedding provider — a SECOND vendor dependency that broke the
+        # server deployment (zhipu has no balance; openrouter unreachable) even
+        # though chunk vectorization itself is ark-only. Using the same
+        # multimodal space as retrieval also makes the split signal consistent
+        # with what search actually ranks on. Own rate limiter: this runs on
+        # the caller's loop where the shared limiter's lock is safe, but the
+        # limiter instance should not outlive the chunking step.
+        from tools.multimodal_vectorizer import build_vectorizer
+
+        chunk_vectorizer = build_vectorizer()
+        try:
+
+            async def _embed_for_chunking(texts: list[str]) -> list[list[float]]:
+                results = await chunk_vectorizer.embed_texts(texts)
+                return [r.vector for r in results if r.vector is not None]
+
+            chunks = await chunk_document(pages, embed_fn=_embed_for_chunking)
+        finally:
+            await chunk_vectorizer.aclose()
     summary["chunks_text"] = sum(1 for c in chunks if c.kind == "text")
     summary["chunks_image"] = sum(1 for c in chunks if c.kind == "image")
 

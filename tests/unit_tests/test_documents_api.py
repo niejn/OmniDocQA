@@ -621,6 +621,7 @@ def test_documents_list_is_bare_array(client: TestClient, fake_repo: FakeRepo) -
     assert [row["document_id"] for row in body] == [9802, 9801]  # document_id DESC
     assert body[0] == {
         "document_id": 9802,
+        "status": "completed",
         "filename": "ch2.pdf",
         "title": "Flink ch2",
         "page_count": 10,

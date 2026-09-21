@@ -172,6 +172,7 @@ def test_build_document_list_item_maps_metadata() -> None:
     item = repo.build_document_list_item(row)
     assert item == {
         "document_id": 9801,
+        "status": "completed",
         "filename": "ch1.pdf",
         "title": "Flink · 第1章 · ch1",
         "page_count": 14,

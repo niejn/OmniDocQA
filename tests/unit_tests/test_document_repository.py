@@ -306,7 +306,8 @@ def test_mark_document_ingest_status_flips_status(monkeypatch):
 
 
 def test_multimodal_document_overview_filters_non_completed(monkeypatch):
-    """The overview SQL excludes status=ingesting/failed placeholders (P1-2 step 5)."""
+    """The overview SQL keeps completed rows AND in-flight placeholders (ingesting
+    rows are what keeps an upload visible across a refresh) but excludes failed."""
     captured: list = []
 
     async def fake_get_pool():
@@ -317,6 +318,6 @@ def test_multimodal_document_overview_filters_non_completed(monkeypatch):
     asyncio.run(repo.multimodal_document_overview())
 
     _, query, _args = captured[0]
-    assert "COALESCE(metadata->>'status', 'completed') = 'completed'" in query
+    assert "COALESCE(metadata->>'status', 'completed') IN ('completed', 'ingesting')" in query
     assert "metadata->>'source' = 'multimodal_pdf'" in query
     assert "ORDER BY id DESC" in query

@@ -666,6 +666,20 @@ async def upload_multimodal_pdf(*, pdf_path: Path, collection: str | None = None
             extra_metadata=extra_metadata,
             replace=True,
         )
+    except asyncio.CancelledError:
+        # Browser disconnect / page refresh mid-upload cancels the request task
+        # (uvicorn cancels the handler). Nothing is still writing at this point
+        # by definition — DELETE the placeholder so the inventory doesn't keep
+        # an eternal 入库中 ghost; cancellation then propagates to uvicorn.
+        try:
+            await repo.delete_placeholder_document(document_id)
+        except Exception as del_exc:
+            logger.warning(
+                "[Documents] cancelled upload {}: placeholder delete failed ({})",
+                document_id,
+                del_exc,
+            )
+        raise
     except UploadRejectedError:
         # Guard-stage rejection: the guards run before ANY store write, so
         # there is nothing to cascade — DELETE the placeholder outright

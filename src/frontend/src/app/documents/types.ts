@@ -174,6 +174,8 @@ export interface UploadResult {
 
 export interface DocumentListItem {
   document_id: number;
+  /** completed = 已入库可检索；ingesting = 上传中/入库中（服务端占位行，刷新页面仍在）。 */
+  status?: "completed" | "ingesting" | string;
   filename: string;
   title: string;
   page_count: number;
