@@ -1,9 +1,10 @@
 /** @type {import('next').NextConfig} */
 
 /*
- * 后端 FastAPI 源。rewrites 在 dev-server 启动 / build 时对 next.config.mjs 求值，
- * 此处 process.env 是启动时进程环境（与 src/app/api/** 代理路由读取的是同一个
- * BACKEND_API_BASE_URL 变量），而非浏览器端 env——不存在构建期固化到客户端的问题。
+ * 后端 FastAPI 源。⚠️ rewrites 的 destination 在 `next build` 时求值并固化进
+ * .next/routes-manifest.json（`next start` 不会重新求值）——部署时必须在
+ * 构建命令上带上 BACKEND_API_BASE_URL（与 src/app/api/** 代理路由的运行时
+ * env 读取不同，那 20 个 route 是真运行时读 process.env）。
  */
 const BACKEND_API_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://127.0.0.1:8000";
 

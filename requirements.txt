@@ -13,6 +13,7 @@ llama-index-core>=0.12
 langgraph>=0.2.6
 langfuse>=4.0,<5.0
 loguru>=0.7
+opencc-python-reimplemented>=0.1.7
 asyncpg>=0.29
 pymilvus>=2.5,<3
 openai>=1.0

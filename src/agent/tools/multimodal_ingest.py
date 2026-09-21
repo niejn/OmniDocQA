@@ -130,7 +130,17 @@ async def _run_guards(
             row = await conn.fetchrow(
                 "SELECT metadata FROM rag_documents WHERE id = $1", document_id
             )
-        if row and (row["metadata"] or {}).get("source") == "multimodal_pdf" and not replace:
+        if row is None:
+            meta = None
+        else:
+            # asyncpg returns JSONB as str unless a codec is registered; the
+            # upload path ALWAYS finds the placeholder row here (allocated
+            # moments ago), so parse defensively (deployment bug #1 on a
+            # fresh database).
+            meta = row["metadata"]
+            if isinstance(meta, str):
+                meta = json.loads(meta) if meta.strip() else {}
+        if row and (meta or {}).get("source") == "multimodal_pdf" and not replace:
             raise UploadRejectedError(
                 f"document_id {document_id} already holds a multimodal document; rerun with --replace"
             )
@@ -138,7 +148,14 @@ async def _run_guards(
     # Page-count pre-check BEFORE rasterizing (review P1-4): load_page_images
     # renders EVERY page into memory, so a huge PDF must be rejected from the
     # fitz page_count alone instead of OOM-ing in the renderer first.
-    page_count = await asyncio.to_thread(_pdf_page_count, pdf_path)
+    try:
+        page_count = await asyncio.to_thread(_pdf_page_count, pdf_path)
+    except Exception as exc:
+        # A corrupt / fake .pdf is a client error, not a store failure (422,
+        # not 502 — deployment finding #2).
+        raise UploadRejectedError(
+            f"cannot open {pdf_path.name} as a PDF: {type(exc).__name__}"
+        ) from exc
     if page_count > max_pages:
         raise UploadRejectedError(f"PDF {pdf_path.name} has {page_count} pages (> {max_pages}); rejected")
 
