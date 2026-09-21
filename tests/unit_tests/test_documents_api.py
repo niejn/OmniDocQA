@@ -36,6 +36,7 @@ class FakeRepo:
         self.sets: list[dict] = []
         self.placeholders: list[dict] = []
         self.status_marks: list[dict] = []
+        self.deleted_placeholders: list[int] = []
         self.fail_next_placeholder = False
 
     async def get_dynamic_collection(self, name: str) -> dict | None:
@@ -74,15 +75,26 @@ class FakeRepo:
     async def expand_chapters(self, document_ids):
         return [], list(document_ids)
 
-    async def insert_placeholder_document(self, document_id: int, *, collection: str, filename: str) -> None:
+    async def insert_placeholder_document(
+        self, document_id: int, *, collection: str, filename: str, book_meta: dict | None = None
+    ) -> None:
         if self.fail_next_placeholder:
             self.fail_next_placeholder = False
             import asyncpg
 
             raise asyncpg.UniqueViolationError("rag_documents_pkey")
         self.placeholders.append(
-            {"document_id": int(document_id), "collection": collection, "filename": filename}
+            {
+                "document_id": int(document_id),
+                "collection": collection,
+                "filename": filename,
+                "book_meta": book_meta,
+            }
         )
+
+    async def delete_placeholder_document(self, document_id: int) -> bool:
+        self.deleted_placeholders.append(int(document_id))
+        return True
 
     async def mark_document_ingest_status(self, document_id: int, status: str) -> bool:
         self.status_marks.append({"document_id": int(document_id), "status": status})
@@ -413,12 +425,19 @@ def test_upload_service_defaults_and_metadata(
         "page_count": 12,
         "filename": "第三章.pdf",
     }
-    # The id was RESERVED with a placeholder row (status=ingesting) before ingest.
+    # The id was RESERVED with a placeholder row (status=ingesting) before ingest;
+    # the placeholder carries the book metadata so a failed upload stays
+    # self-describing (facet shows the file, not a numeric-id ghost).
     assert fake_repo.placeholders == [
         {
             "document_id": 9806,
             "collection": config.multimodal_collection,
             "filename": "第三章.pdf",
+            "book_meta": {
+                "book_id": "第三章",
+                "chapter_index": 1,
+                "chapter_label": "第三章 · 第1章 · 第三章",
+            },
         }
     ]
     assert captured["collection"] == config.multimodal_collection
@@ -508,6 +527,49 @@ def test_upload_failure_flags_placeholder_failed(
 
     assert fake_repo.placeholders[0]["document_id"] == 1  # row kept (DELETE cascade cleans it)
     assert fake_repo.status_marks == [{"document_id": 1, "status": "failed"}]
+
+
+def test_upload_guard_rejection_deletes_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_repo: FakeRepo
+) -> None:
+    """Guard-stage UploadRejectedError DELETEs the placeholder outright (finding #6):
+    the guards run before any store write, so a failed row would only pollute
+    the inventory — no failed mark, no ghost book in the facet."""
+    import tools.multimodal_ingest as mm_ingest
+    import tools.node_repository as node_repo
+
+    class MaxIdConn:
+        async def fetchrow(self, query: str, *args: object):
+            return {"max_id": 0}
+
+    class MaxIdPool:
+        def acquire(self):
+            class _Ctx:
+                async def __aenter__(self):
+                    return MaxIdConn()
+
+                async def __aexit__(self, *exc: object) -> bool:
+                    return False
+
+            return _Ctx()
+
+    async def rejected(*args: object, **kwargs: object):
+        raise mm_ingest.UploadRejectedError("PDF ch1.pdf has 900 pages (> 500); rejected")
+
+    async def fake_pool():
+        return MaxIdPool()
+
+    monkeypatch.setattr(node_repo, "get_pool", fake_pool)
+    monkeypatch.setattr(mm_ingest, "ingest_one_pdf", rejected)
+    monkeypatch.setattr(document_service, "_milvus_document_exists", lambda doc_id, col: False)
+
+    pdf = tmp_path / "ch1.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    with pytest.raises(mm_ingest.UploadRejectedError):
+        asyncio.run(document_service.upload_multimodal_pdf(pdf_path=pdf, collection=None))
+
+    assert fake_repo.deleted_placeholders == [1]
+    assert fake_repo.status_marks == []
 
 
 def test_resolve_upload_collection_rejects_text_library(fake_repo: FakeRepo) -> None:

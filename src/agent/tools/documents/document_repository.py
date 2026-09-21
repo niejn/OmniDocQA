@@ -237,15 +237,39 @@ async def multimodal_document_exists(document_id: int) -> bool:
 # Placeholder-row lifecycle (review P1-2): uploads RESERVE their document_id by
 # inserting this row immediately after allocation, so two concurrent uploads can
 # never ingest into the same id. status=ingesting → completed (final upsert) /
-# failed (upload failure UPDATE). The row stays in place on failure so the
-# DELETE cascade can clean it up later.
+# failed (upload failure UPDATE, mid-ingest: row stays for the DELETE cascade) /
+# DELETED outright for guard-stage rejections (delete_placeholder_document —
+# nothing was written to the stores, so there is nothing to cascade).
 PLACEHOLDER_SOURCE = "multimodal_pdf"
 
 
-async def insert_placeholder_document(document_id: int, *, collection: str, filename: str) -> None:
+async def insert_placeholder_document(
+    document_id: int,
+    *,
+    collection: str,
+    filename: str,
+    book_meta: dict[str, Any] | None = None,
+) -> None:
     """INSERT the upload placeholder row; asyncpg.UniqueViolationError propagates
     (allocate_document_id retries with the next candidate). rag_documents has no
-    NOT NULL columns besides id/metadata, so id + metadata are sufficient."""
+    NOT NULL columns besides id/metadata, so id + metadata are sufficient.
+    ``book_meta`` (book_id/chapter_index/chapter_label) is merged in when given
+    so even a failed upload leaves a self-describing row instead of a
+    numeric-id ghost in the facet (deployment finding #6)."""
+    metadata: dict[str, Any] = {
+        "source": PLACEHOLDER_SOURCE,
+        "status": "ingesting",
+        "collection": collection,
+        "filename": filename,
+    }
+    if book_meta:
+        metadata.update(
+            {
+                "book_id": book_meta.get("book_id"),
+                "chapter_index": book_meta.get("chapter_index"),
+                "chapter_label": book_meta.get("chapter_label"),
+            }
+        )
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -254,15 +278,20 @@ async def insert_placeholder_document(document_id: int, *, collection: str, file
             VALUES ($1, NULL, NULL, 'multimodal_pdf', $2::jsonb)
             """,
             int(document_id),
-            json.dumps(
-                {
-                    "source": PLACEHOLDER_SOURCE,
-                    "status": "ingesting",
-                    "collection": collection,
-                    "filename": filename,
-                }
-            ),
+            json.dumps(metadata),
         )
+
+
+async def delete_placeholder_document(document_id: int) -> bool:
+    """DELETE a placeholder row outright; True when a row was removed.
+
+    Used when an upload fails in the guard stage (nothing was written to
+    Milvus/assets yet) — there is nothing to cascade, so keeping a failed row
+    would only pollute the inventory."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tag = await conn.execute("DELETE FROM rag_documents WHERE id = $1", int(document_id))
+    return tag.endswith("DELETE 1")
 
 
 async def mark_document_ingest_status(document_id: int, status: str) -> bool:
@@ -338,7 +367,13 @@ def build_document_list_item(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def list_multimodal_documents() -> list[dict[str, Any]]:
-    """All multimodal rows of rag_documents with hierarchy metadata."""
+    """Completed multimodal rows with hierarchy metadata (drives GET /filters).
+
+    Same visibility rule as ``multimodal_document_overview``: placeholder rows
+    mid-upload (status=ingesting) and failed uploads (status=failed) are
+    excluded — otherwise every quota/rejection failure would surface as a
+    bogus 《<document_id>》 book in the facet (deployment finding #6).
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -346,6 +381,7 @@ async def list_multimodal_documents() -> list[dict[str, Any]]:
             SELECT id, title, source_uri, metadata
             FROM rag_documents
             WHERE metadata->>'source' = 'multimodal_pdf'
+              AND COALESCE(metadata->>'status', 'completed') = 'completed'
             ORDER BY (metadata->>'book_id'), (metadata->>'chapter_index')::int NULLS LAST, id
             """
         )

@@ -572,7 +572,9 @@ async def get_chapter_chunks(
 _MAX_ALLOCATE_ATTEMPTS = 200
 
 
-async def allocate_document_id(milvus_collection: str, *, filename: str) -> int:
+async def allocate_document_id(
+    milvus_collection: str, *, filename: str, book_meta: dict[str, Any] | None = None
+) -> int:
     """Auto-allocate and RESERVE a collision-free document_id for an upload.
 
     node_repository has no allocator (ids are caller-assigned, e.g.
@@ -582,6 +584,8 @@ async def allocate_document_id(milvus_collection: str, *, filename: str) -> int:
     MAX+1 alone raced with the whole ingest duration, letting two concurrent
     uploads pick the same id and overwrite each other. A loser of the INSERT
     race (UniqueViolationError) bumps its candidate and retries, bounded.
+    ``book_meta`` goes onto the placeholder so a failed upload stays
+    self-describing (facet shows the file, not a numeric-id ghost).
     """
     from ..node_repository import get_pool
 
@@ -594,7 +598,7 @@ async def allocate_document_id(milvus_collection: str, *, filename: str) -> int:
             candidate += 1
         try:
             await repo.insert_placeholder_document(
-                candidate, collection=milvus_collection, filename=filename
+                candidate, collection=milvus_collection, filename=filename, book_meta=book_meta
             )
         except asyncpg.UniqueViolationError:
             candidate += 1  # concurrent upload won this id; take the next
@@ -638,13 +642,13 @@ async def upload_multimodal_pdf(*, pdf_path: Path, collection: str | None = None
     status=failed via UPDATE (the row stays so the DELETE cascade can clean it)
     and the exception propagates for 422/502 classification.
     """
-    from ..multimodal_ingest import build_book_meta, ingest_one_pdf
+    from ..multimodal_ingest import UploadRejectedError, build_book_meta, ingest_one_pdf
 
     target = await resolve_upload_collection(collection)
     pdf_path = Path(pdf_path)
     filename = pdf_path.name
-    document_id = await allocate_document_id(target, filename=filename)
     (book_meta,) = build_book_meta(None, 1, [pdf_path])
+    document_id = await allocate_document_id(target, filename=filename, book_meta=book_meta)
     extra_metadata = {
         "source": "multimodal_pdf",
         "collection": target,
@@ -662,7 +666,21 @@ async def upload_multimodal_pdf(*, pdf_path: Path, collection: str | None = None
             extra_metadata=extra_metadata,
             replace=True,
         )
+    except UploadRejectedError:
+        # Guard-stage rejection: the guards run before ANY store write, so
+        # there is nothing to cascade — DELETE the placeholder outright
+        # instead of leaving a failed ghost in the inventory (deployment
+        # finding #6: quota-failed uploads piled up as 《<id>》 facet junk).
+        try:
+            await repo.delete_placeholder_document(document_id)
+        except Exception as del_exc:
+            logger.warning(
+                "[Documents] failed to delete rejected placeholder {}: {}", document_id, del_exc
+            )
+        raise
     except Exception:
+        # Mid-ingest failure: Milvus points / assets may exist, so the row
+        # stays (status=failed) for the DELETE cascade to clean up.
         try:
             await repo.mark_document_ingest_status(document_id, "failed")
         except Exception as mark_exc:
