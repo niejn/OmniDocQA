@@ -121,8 +121,10 @@ services:
       LANGFUSE_INIT_PROJECT_NAME: local-project
       LANGFUSE_INIT_USER_EMAIL: admin@local.dev
       LANGFUSE_INIT_USER_PASSWORD: admin123456
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: REDACTED_LANGFUSE_PUBLIC_KEY
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: REDACTED_LANGFUSE_SECRET_KEY
+      # Keys come from the compose-level .env (same dir, gitignored) — never commit real values.
+      # Empty values on first boot: Langfuse auto-generates project keys (see container logs).
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-}
 
   clickhouse:
     image: docker.io/clickhouse/clickhouse-server:25.12
