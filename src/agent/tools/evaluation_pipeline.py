@@ -21,6 +21,11 @@ except ImportError:  # pragma: no cover
     pass
 
 try:
+    # ragas<=0.4.3 + langchain-community>=0.4: stub the removed vertexai module
+    # before the first ragas import or everything below degrades to None.
+    from .ragas_compat import ensure_ragas_importable
+
+    ensure_ragas_importable()
     from ragas.dataset_schema import SingleTurnSample
 
     # NOTE: keep the legacy `ragas.metrics` path — the new `ragas.metrics.collections`

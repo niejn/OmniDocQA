@@ -256,6 +256,9 @@ def _import_multimodal_metrics() -> tuple[Any, Any, str | None]:
     path is removed. Returns ``(faithfulness_cls, relevance_cls, skip_reason)``
     with both classes None and a reason string when neither path imports.
     """
+    from tools.ragas_compat import ensure_ragas_importable
+
+    ensure_ragas_importable()  # ragas<=0.4.3 crashes on import otherwise (PR #2769 unmerged)
     try:
         from ragas.metrics import MultiModalFaithfulness, MultiModalRelevance
     except Exception as exc:  # ImportError and optional-dependency failures

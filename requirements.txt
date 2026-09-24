@@ -24,18 +24,21 @@ minio>=7.2
 pdfplumber>=0.10
 python-docx>=1.1
 chardet>=5.2
-# RAGAS: pinned to PR #2769 fix commit (lazy VertexAI imports; fixes import crash with
-# langchain-community>=0.4). Replace with `ragas>=0.4.4` once released.
-# uv quirk: if the raw-commit ref fails to resolve, clone the repo, `git checkout` the
-# SHA, and `pip install <local-dir>` instead.
-ragas @ git+https://github.com/explodinggradients/ragas@fc0d071c80d240ce3a19a0935fbde5d125d73b85
+# ragas 0.4.3 (PyPI latest): the old git-commit pin (PR #2769, lazy VertexAI
+# imports) is unfetchable — the commit lives on an unmerged contributor fork.
+# The eager-import crash is handled at our import boundary instead:
+# src/agent/tools/ragas_compat.py stubs the removed vertexai module.
+ragas>=0.4.3
 # pyarrow 24 crashes natively (access violation) on Windows/Py3.13 inside this stack;
 # 18.1 lacks pyarrow.json_ used by the datasets chain — 21.0.0 is the verified window.
 pyarrow==21.0.0
-# CUDA torch pinned to local whl (mirrors pyproject.toml): PyPI Windows wheels are
-# CPU-only and would silently replace GPU inference. torchaudio unused in this repo.
-torch @ file:///C:/Users/julien/Downloads/torch-2.12.1+cu132-cp313-cp313-win_amd64.whl
-torchvision @ file:///C:/Users/julien/Downloads/torchvision-0.27.1+cu132-cp313-cp313-win_amd64.whl
+# CUDA torch: PyPI Windows wheels are CPU-only and would silently replace GPU
+# inference, and the former file:///C:/... local-wheel pin broke every CI run
+# (Linux runners can't resolve Windows paths). Non-Windows (CI) installs from
+# PyPI; Windows keeps the skill-installed local CUDA wheel untouched (the
+# installed version satisfies the spec, so nothing is ever replaced).
+torch>=2.12.1; sys_platform != "win32"
+torchvision>=0.27.1; sys_platform != "win32"
 sentence-transformers>=4.1.0
 transformers>=4.51.0
 bitsandbytes>=0.46.0

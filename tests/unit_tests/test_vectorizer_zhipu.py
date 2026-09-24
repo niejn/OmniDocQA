@@ -6,8 +6,8 @@ batch/char caps. The real .env (which may carry a live ZHIPU_API_KEY) is
 overridden per test via monkeypatch, so no credentials or network are used.
 """
 
-from core.config import config
 import tools.vectorizer as v
+from core.config import config
 
 _ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
 
