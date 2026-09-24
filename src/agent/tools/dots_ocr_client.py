@@ -177,7 +177,7 @@ def _resize_image(img, width: int, height: int):
 
 
 def parse_layout_json(response_text: str) -> list[dict] | None:
-    """Extract the layout cell array from a model response; None when unparseable.
+    """Extract the layout cell array from a model response; None when unparsable.
 
     Tolerates code fences and prose around the JSON (official output_cleaner
     behaviour): strips fences first, then falls back to the outermost
@@ -211,7 +211,7 @@ def parse_layout_json(response_text: str) -> list[dict] | None:
                 cells.append(
                     {
                         # float() inside the try: a non-numeric bbox makes the
-                        # whole candidate unparseable (contract: return None),
+                        # whole candidate unparsable (contract: return None),
                         # not a half-parsed layout with garbage coordinates.
                         "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
                         "category": category,
