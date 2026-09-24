@@ -271,3 +271,17 @@ Milvus 原生"重排"只有 `hybrid_search` 的 **RRFRanker/WeightedRanker**—�
 **公网暴露（nginx :80，不开新端口）**：上次部署会话已在 `teacher-aicoding` 站点（default_server）接线 `/rag/`（剥前缀→:3000）与 `/documents`、`/api/`、`/_next/`、`/icon.svg`（根级→:3000），全部套 `_auth_verify` 演示门禁 + 210M 上传体积；本次补上缺失的 **`/agent/`**（页图等后端直连路径 → :8001，同样过门禁；teacher 应用自身无 /agent 前缀路由，已验证无遮蔽）。访问入口：`http://8.155.130.113/rag/documents`（带门禁凭证）。数据端口（5433/19530/9002/9003）已收敛到 127.0.0.1（override `!override` 端口表），安全组无需为数据面开任何口。
 
 **部署发现 #6（用户报告）：失败上传在筛选面板堆出《3》《4》《5》《6》幽灵书**。三重根因：get_filters 聚合没像列表那样过滤 status（failed/ingesting 行全部漏入）+ 占位行 metadata 没有 book 字段（book_id 兜底成 document_id）+ 守卫阶段拒绝本不该留行。修复（commit 9ed61d6）：filters 复用 completed 可见性规则；占位行从第一天就带 book 元数据；守卫阶段 UploadRejectedError 直接 DELETE 占位行（无 store 写入、无级联必要），中段失败仍留 failed 行走级联。服务器 4 条 junk 行已走级联清理，filters 返回干净空面。
+
+## 2026-09-23 P1 韧性修复：429 配额 fail-fast + 部署收口（ark 配额重置夜）
+
+**背景**：09-22 14:52 整书上传 500——ark plan 端点月配额耗尽（429 `AccountQuotaExceeded`，重置夜实时探测复核）。旧 `_call_ark` 对一切 429 无差别指数退避（6 试 ≈134s，含终次空睡 ~69s），且响应体被丢弃（`last_error="rate limited (429)"`）→ 原因不可见。
+
+**修复（本地 65 测全绿 + ruff 全清；4 文件已部署服务器，sha256 逐一核对一致，服务器留 `.bak-0923` 备份）**：
+1. `multimodal_vectorizer.py`：429 先读 body 分类——`AccountQuotaExceeded`（frozenset 常量）→ 零退避立即返回 `EmbedResult(quota_exhausted=True)`，ark 的重置时间透传进错误消息；瞬态 429 保留退避但 `attempt < max_retries` 才睡（终次空睡删除）。新类型 `EmbeddingQuotaExceededError(ValueError)`——CLI `except ValueError` 契约不变。
+2. `dense_milvus_multimodal.py`：quota 结果 → 抛类型化错误（区别于裸 ValueError 存储故障）。
+3. `document_service.classify_upload_failure`：quota → **503**（服务侧配额枯竭，区别于 422 客户端错 / 502 存储故障）。
+4. `multimodal_ingest.py`：**语义分块期吞错修复（实弹冒烟暴露的第二层）**——`_embed_for_chunking` 旧版过滤失败结果返回空表，分块器继续逐批调用（~70ms/次 + RPM 窗等待，实测拖满 62.8s）；现逐条短路，首条配额失败即中断。
+
+**线上验证（配额耗尽窗口内实弹）**：上传 peft-ch2.pdf → **HTTP 503 in 2.0s**（修复前同场景 134s 退避 + 500 不明错误），消息含 `AccountQuotaExceeded` 与重置时间。部署同步收口：服务器 .env 显式化 `MULTIMODAL_EMBEDDING_BASE_URL/MODEL/DIM=2048/RPM=120`（原隐式继承 OPENAI_BASE_URL）+ chmod 600；backend 绑定 `0.0.0.0 → 127.0.0.1`（数据端口 09-21 已收敛，本次补上应用端口；nginx `/agent/` 门禁路由复核 302 正常，回环 200）。
+
+**交接 M1a（UPLOAD_INGEST_V2_DESIGN）**：failed 卡片的 `ingest_error` 直接落本错误消息（自带重置时间），文案零加工。e2e_after_quota.sh 的 cron 化经评估降级为低优先级（需要时手动跑）。

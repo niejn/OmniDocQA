@@ -89,15 +89,23 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
 class FakeVectorizer(MultimodalVectorizer):
     """Record calls, return deterministic vectors without any HTTP."""
 
-    def __init__(self, dim: int = 3, fail_on_text: str | None = None) -> None:
+    def __init__(self, dim: int = 3, fail_on_text: str | None = None, quota_fail: bool = False) -> None:
         super().__init__()
         self.dim = dim
         self.text_calls: list[str] = []
         self.image_calls: list[str] = []
         self.fail_on_text = fail_on_text
+        self.quota_fail = quota_fail
 
     async def embed_text(self, text: str) -> EmbedResult:
         self.text_calls.append(text)
+        if self.quota_fail:
+            return EmbedResult(
+                vector=None,
+                quota_exhausted=True,
+                error="embedding provider quota exhausted (ark AccountQuotaExceeded): "
+                "It will reset at 2026-09-23 23:59:59 +0800 CST.",
+            )
         if self.fail_on_text and self.fail_on_text in text:
             return EmbedResult(vector=None, error="boom")
         return EmbedResult(vector=[0.1] * self.dim)
@@ -172,6 +180,21 @@ def test_upsert_embedding_failure_is_fail_fast(fake_client: FakeClient):
         )
     assert fake_client.inserted == []  # nothing written on failure
     assert fake_client.deleted_filters == []  # previous points survive (delete runs after validation)
+
+
+def test_upsert_quota_exhausted_raises_typed_error(fake_client: FakeClient):
+    """Quota-exhausted embedding results raise EmbeddingQuotaExceededError (the
+    upload API's 503 signal), not the generic store-failure ValueError."""
+    from tools.multimodal_vectorizer import EmbeddingQuotaExceededError
+
+    backend = MilvusMultimodalDenseBackend()
+    with pytest.raises(EmbeddingQuotaExceededError, match="AccountQuotaExceeded"):
+        asyncio.run(
+            backend.upsert_document_nodes(
+                904, [_chunk()], vectorizer=FakeVectorizer(quota_fail=True), filename="f.pdf", book_id="b", chapter_label="c"
+            )
+        )
+    assert fake_client.inserted == [] and fake_client.deleted_filters == []
 
 
 def test_upsert_image_without_data_uri_raises(fake_client: FakeClient):

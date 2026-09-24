@@ -30,7 +30,7 @@ from loguru import logger
 from pymilvus import DataType, Function, FunctionType
 
 from ..milvus_store import MILVUS_MAX_QUERY_WINDOW, get_client
-from ..multimodal_vectorizer import MultimodalVectorizer
+from ..multimodal_vectorizer import EmbeddingQuotaExceededError, MultimodalVectorizer
 from ..rag_stage_log import log_rag
 
 _ID_MAX_LENGTH = 64
@@ -200,6 +200,13 @@ class MilvusMultimodalDenseBackend:
             else:
                 result = await vectorizer.embed_text(f"{chunk.title}：{chunk.text}" if chunk.title else chunk.text)
             if result.vector is None:
+                if result.quota_exhausted:
+                    # Provider quota is gone until its reset — abort the whole
+                    # document immediately (upload API maps this to 503 with the
+                    # reset time carried in the message).
+                    raise EmbeddingQuotaExceededError(
+                        f"embedding aborted at chunk {chunk.chunk_id}: {result.error}"
+                    )
                 raise ValueError(f"embedding failed for chunk {chunk.chunk_id}: {result.error}")
             if result.truncated:
                 truncated_count += 1

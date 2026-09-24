@@ -15,7 +15,9 @@ dashscope provider (fallback, optional SDK): ``MultiModalEmbedding.call`` with
 installed.
 
 Rate limiting mirrors the reference ``FixedWindowRateLimiter`` (120 RPM window)
-plus exponential 429 backoff (5 tries, base 2.0s). ``MockTransport``-testable:
+plus exponential 429 backoff (5 tries, base 2.0s). Quota-class 429s (ark
+``AccountQuotaExceeded``) fail FAST with ``quota_exhausted=True`` — no backoff
+budget burned (09-22 whole-book upload finding). ``MockTransport``-testable:
 pass ``transport`` to inject an httpx transport in unit tests.
 """
 
@@ -41,6 +43,36 @@ class EmbedResult:
     vector: list[float] | None
     truncated: bool = False
     error: str | None = None
+    quota_exhausted: bool = False  # non-retryable provider quota (ark AccountQuotaExceeded)
+
+
+# 429 subcodes that retrying cannot fix. Measured sample: the ark plan endpoint's
+# monthly AccountQuotaExceeded (whole-book upload failure, 2026-09-22) — its body
+# carries the reset time, which must reach the caller instead of being eaten by
+# six rounds of exponential backoff.
+_NON_RETRYABLE_429_CODES = frozenset({"AccountQuotaExceeded"})
+
+
+class EmbeddingQuotaExceededError(ValueError):
+    """Embedding aborted: provider quota exhausted until its reset time.
+
+    Subclasses ``ValueError`` so the CLI's ``except ValueError`` ingest-failure
+    contract is untouched; the upload API maps this TYPE to 503 (service-side
+    quota — neither a client 422 nor a store 502).
+    """
+
+
+def _quota_error_fields(response: httpx.Response) -> tuple[str, str]:
+    """Extract ``(error.code, error.message)`` from an ark/OpenAI-style body."""
+    try:
+        err = (response.json() or {}).get("error")
+    except ValueError:
+        return "", response.text[:200]
+    if not isinstance(err, dict):
+        return "", response.text[:200]
+    code = str(err.get("code") or "")
+    message = str(err.get("message") or "")[:250] or response.text[:200]
+    return code, message
 
 
 class FixedWindowRateLimiter:
@@ -152,10 +184,19 @@ class MultimodalVectorizer:
                 logger.warning("[MmVector] attempt {} network error: {}", attempt + 1, exc)
             else:
                 if response.status_code == 429:
-                    last_error = "rate limited (429)"
-                    backoff = float(config.multimodal_embed_backoff_base) * (2**attempt) * (0.8 + random.random() * 0.4)
-                    logger.warning("[MmVector] 429 on attempt {}/{}, backoff {:.2f}s", attempt + 1, max_retries + 1, backoff)
-                    await asyncio.sleep(backoff)
+                    code, message = _quota_error_fields(response)
+                    if code in _NON_RETRYABLE_429_CODES:
+                        logger.warning("[MmVector] non-retryable 429 ({}) — failing fast", code)
+                        return EmbedResult(
+                            vector=None,
+                            quota_exhausted=True,
+                            error=f"embedding provider quota exhausted (ark {code}): {message}",
+                        )
+                    last_error = f"rate limited (429): {response.text[:200]}"
+                    if attempt < max_retries:  # no wasted sleep after the final attempt
+                        backoff = float(config.multimodal_embed_backoff_base) * (2**attempt) * (0.8 + random.random() * 0.4)
+                        logger.warning("[MmVector] 429 on attempt {}/{}, backoff {:.2f}s", attempt + 1, max_retries + 1, backoff)
+                        await asyncio.sleep(backoff)
                     continue
                 if response.status_code != 200:
                     return EmbedResult(vector=None, error=f"HTTP {response.status_code}: {response.text[:300]}")

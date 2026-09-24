@@ -5,6 +5,7 @@ import json
 
 import httpx
 import pytest
+from core.config import config
 from tools.multimodal_vectorizer import (
     EmbedResult,
     FixedWindowRateLimiter,
@@ -119,6 +120,80 @@ def test_retries_exhausted_returns_error(monkeypatch):
     assert "rate limited" in (result.error or "")
 
 
+def test_429_account_quota_fails_fast_without_backoff(monkeypatch):
+    """ark ``AccountQuotaExceeded`` 429 is non-retryable: ONE call, ZERO sleeps,
+    and the error carries the provider code + reset time (09-22 finding: six
+    retries × ~134s then an opaque 500)."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("tools.multimodal_vectorizer.asyncio.sleep", fake_sleep)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": "AccountQuotaExceeded",
+                    "message": "You have exceeded the monthly usage quota. "
+                    "It will reset at 2026-09-23 23:59:59 +0800 CST.",
+                    "type": "TooManyRequests",
+                }
+            },
+        )
+
+    async def run():
+        limiter = FixedWindowRateLimiter(10000, 60)
+        vectorizer = MultimodalVectorizer(transport=httpx.MockTransport(handler), limiter=limiter)
+        try:
+            return await vectorizer.embed_text("hello")
+        finally:
+            await vectorizer.aclose()
+
+    result = asyncio.run(run())
+    assert calls["n"] == 1  # failed fast: no retry attempts
+    assert sleeps == []  # and no backoff sleeps
+    assert result.vector is None
+    assert result.quota_exhausted is True
+    error = result.error or ""
+    assert "AccountQuotaExceeded" in error
+    assert "2026-09-23 23:59:59" in error  # ark's reset time reaches the caller
+
+
+def test_429_transient_exhaustion_skips_terminal_sleep(monkeypatch):
+    """Transient 429s retry ``max_retries`` times — the pre-fix bug slept one
+    extra backoff AFTER the final attempt before giving up (~69s wasted)."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("tools.multimodal_vectorizer.asyncio.sleep", fake_sleep)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    async def run():
+        limiter = FixedWindowRateLimiter(10000, 60)
+        vectorizer = MultimodalVectorizer(transport=httpx.MockTransport(handler), limiter=limiter)
+        try:
+            return await vectorizer.embed_text("hello")
+        finally:
+            await vectorizer.aclose()
+
+    result = asyncio.run(run())
+    assert calls["n"] == config.multimodal_embed_max_retries + 1
+    assert len(sleeps) == config.multimodal_embed_max_retries  # one sleep per RETRY, none terminal
+    assert result.vector is None and result.quota_exhausted is False
+    assert "rate limited" in (result.error or "")
+
+
 def test_http_error_fail_fast():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"error": "image too small"})
@@ -217,3 +292,4 @@ def test_image_embedding_requires_data_uri():
 def test_embed_result_defaults():
     result = EmbedResult(vector=None)
     assert result.vector is None and not result.truncated and result.error is None
+    assert result.quota_exhausted is False

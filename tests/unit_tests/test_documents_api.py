@@ -352,6 +352,20 @@ def test_classify_upload_failure_matrix() -> None:
         )
         == 422
     )
+    # Quota exhaustion (ark AccountQuotaExceeded) → 503: service-side quota,
+    # neither client-rejectable (422) nor a store failure (502).
+    from tools.multimodal_vectorizer import EmbeddingQuotaExceededError
+
+    assert (
+        document_service.classify_upload_failure(
+            EmbeddingQuotaExceededError(
+                "embedding aborted at chunk c0df6ab9: embedding provider quota exhausted "
+                "(ark AccountQuotaExceeded): reset at 2026-09-23 23:59:59 +0800 CST"
+            )
+        )
+        == 503
+    )
+
     # dim/collection/embedding family stays plain ValueError → 502 store failure.
     assert document_service.classify_upload_failure(ValueError("dim=1536 != embedding dim=3072")) == 502
     assert document_service.classify_upload_failure(RuntimeError("milvus down")) == 502

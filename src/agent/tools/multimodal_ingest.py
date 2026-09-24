@@ -31,6 +31,7 @@ from typing import Any
 
 from core.config import config
 from loguru import logger
+from tools.multimodal_vectorizer import EmbeddingQuotaExceededError, EmbedResult
 
 
 class UploadRejectedError(ValueError):
@@ -205,6 +206,25 @@ async def _describe_and_store_assets(
     return crops_by_page
 
 
+def _chunking_vectors(results: list[EmbedResult]) -> list[list[float]]:
+    """Map chunk-time embed results to vectors — aborting, never degrading.
+
+    Quota exhaustion aborts the whole ingest immediately: silently dropping
+    failed embeddings (the pre-fix filter) let the chunker grind through every
+    batch at ~70ms/call while the upload request hung (09-23 live finding). A
+    batch where EVERY text failed means the provider is down — surface that
+    error too instead of handing the chunker an empty signal. Partial failures
+    (e.g. one oversized text → HTTP 400) keep being filtered.
+    """
+    for r in results:
+        if r.quota_exhausted:
+            raise EmbeddingQuotaExceededError(f"chunking aborted: {r.error}")
+    vectors = [r.vector for r in results if r.vector is not None]
+    if results and not vectors:
+        raise ValueError(f"chunking embeddings all failed: {results[0].error}")
+    return vectors
+
+
 async def _vectorize_and_upsert(
     document_id: int,
     chunks: list,
@@ -365,8 +385,17 @@ async def ingest_one_pdf(
         try:
 
             async def _embed_for_chunking(texts: list[str]) -> list[list[float]]:
-                results = await chunk_vectorizer.embed_texts(texts)
-                return [r.vector for r in results if r.vector is not None]
+                # Per-text short-circuit: a quota-exhausted batch can hold
+                # hundreds of texts; awaiting all of them (~70ms/call + one
+                # RPM-window wait ≈ 60s, measured 09-23) before raising would
+                # defeat the fail-fast contract. Abort on the FIRST quota hit.
+                results: list[EmbedResult] = []
+                for text in texts:
+                    r = await chunk_vectorizer.embed_text(text)
+                    if r.quota_exhausted:
+                        raise EmbeddingQuotaExceededError(f"chunking aborted: {r.error}")
+                    results.append(r)
+                return _chunking_vectors(results)
 
             chunks = await chunk_document(pages, embed_fn=_embed_for_chunking)
         finally:

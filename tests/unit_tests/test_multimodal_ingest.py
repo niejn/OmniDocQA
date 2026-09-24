@@ -104,6 +104,45 @@ def test_upload_rejected_error_is_value_error_subclass() -> None:
     assert not isinstance(ValueError("dim=1536 != embedding dim=3072"), UploadRejectedError)
 
 
+def test_chunking_vectors_aborts_on_quota_exhausted() -> None:
+    # Live 09-23 finding: swallowing quota failures made the chunker grind
+    # through every batch (~70ms/call) while the upload request hung.
+    from tools.multimodal_ingest import _chunking_vectors
+    from tools.multimodal_vectorizer import EmbeddingQuotaExceededError, EmbedResult
+
+    results = [
+        EmbedResult(vector=[0.1]),
+        EmbedResult(
+            vector=None,
+            quota_exhausted=True,
+            error="embedding provider quota exhausted (ark AccountQuotaExceeded): reset at 2026-10-31 23:59:59 +0800 CST.",
+        ),
+    ]
+    with pytest.raises(EmbeddingQuotaExceededError, match="AccountQuotaExceeded"):
+        _chunking_vectors(results)
+
+
+def test_chunking_vectors_all_failed_raises() -> None:
+    from tools.multimodal_ingest import _chunking_vectors
+    from tools.multimodal_vectorizer import EmbedResult
+
+    with pytest.raises(ValueError, match="chunking embeddings all failed"):
+        _chunking_vectors([EmbedResult(vector=None, error="HTTP 500: boom")])
+
+
+def test_chunking_vectors_partial_success_filters() -> None:
+    from tools.multimodal_ingest import _chunking_vectors
+    from tools.multimodal_vectorizer import EmbedResult
+
+    mixed = [
+        EmbedResult(vector=[0.1]),
+        EmbedResult(vector=None, error="HTTP 400: image too small"),
+        EmbedResult(vector=[0.2]),
+    ]
+    assert _chunking_vectors(mixed) == [[0.1], [0.2]]
+    assert _chunking_vectors([]) == []
+
+
 # ── P1-1: async surface + worker-thread sync segments (dry-run path) ─────
 
 

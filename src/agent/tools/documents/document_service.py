@@ -712,16 +712,21 @@ async def upload_multimodal_pdf(*, pdf_path: Path, collection: str | None = None
 
 
 def classify_upload_failure(exc: Exception) -> int:
-    """Map an ingest_one_pdf failure to 422 (client-rejectable) or 502 (store failure).
+    """Map an ingest_one_pdf failure to 422 / 502 / 503.
 
     Decided by EXCEPTION TYPE, not message substrings (review P2-1):
     UploadRejectedError (the ingest guards' ValueError subclass: oversize,
-    page cap, unguarded overwrite) → 422; everything else — including the
+    page cap, unguarded overwrite) → 422; EmbeddingQuotaExceededError (ark
+    AccountQuotaExceeded — service-side quota, retrying cannot fix it until
+    the provider resets it) → 503; everything else — including the
     dim/collection/embedding ValueError family and RuntimeError/Exception —
     → 502.
     """
     from ..multimodal_ingest import UploadRejectedError
+    from ..multimodal_vectorizer import EmbeddingQuotaExceededError
 
+    if isinstance(exc, EmbeddingQuotaExceededError):
+        return 503
     return 422 if isinstance(exc, UploadRejectedError) else 502
 
 
