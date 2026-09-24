@@ -24,11 +24,16 @@ dependencies = [
     # pin is fetchable). Drop the stub once ragas>=0.4.4 releases.
     "ragas>=0.4.3",
     "sentence-transformers>=4.1.0",
-    "transformers>=4.51.0",
-    "bitsandbytes>=0.46.0",
-    "accelerate>=1.6.0",
     "loguru>=0.7",
     "asyncpg>=0.29",
+    "pymilvus>=2.5,<3",
+    # Phase-2 multimodal asset store (MULTIMODAL_ASSET_STORE=minio; local store needs none of this)
+    "minio>=7.2",
+    # pyarrow 24 crashes natively (access violation) on Windows/Py3.13 inside this stack;
+    # 18.1 lacks pyarrow.json_ used by the datasets chain — 21.0.0 is the verified window.
+    "pyarrow==21.0.0",
+    "bitsandbytes>=0.46.0",
+    "accelerate>=1.6.0",
     "openai>=1.0",
     "numpy>=1.26",
     "PyMuPDF>=1.23",
